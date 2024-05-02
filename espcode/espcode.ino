@@ -1,15 +1,16 @@
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <WebSocketClient.h>
 #include <WiFiClientSecure.h>
-#include <TFT.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
 #include <SPI.h>
 
 #define cs 10
 #define dc 9
 #define rst 8
-#define UP 11
-#define DOWN 12
-#define SELOK 13
+#define UP 12
+#define DOWN 14
+#define SELOK 15
 
 int spacing = 3;  // Linespacing for the display
 int default_spacing = 3;
@@ -20,23 +21,7 @@ char host[] = "192.168.40.183"; // change ip to the server ////
 WebSocketClient webSocketClient;
 WiFiClient client;
 
-TFT disp = TFT(cs, dc, rst);
-
-void setup() {
-  // WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
-  // it is a good practice to make sure your code sets wifi mode how you want it.
-  disp.begin();
-  disp.background(0,0,0);
-  disp_start();
-
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-  wifiSetup();
-}
-
-void loop() {
-  wifiLoop();
-}
+Adafruit_ST7735 disp = Adafruit_ST7735(cs, dc, rst);
 
 void wifiSetup(){ //WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wm;
@@ -114,40 +99,120 @@ void wifiLoop(){
   delay(3000);
 }
 
+// ------------------------------ Functions for displaying ------------------------------ 
+
+void disp_write(String distring, int size, int x, int line, int color = 0xFFFF) {
+  // ------------------------------ 
+  // Prints onto display
+  // ------------------------------ 
+
+  int y = size*10*(line-1)+spacing;
+  //static_assert(y <= 128, "Display overflow");
+
+  disp.setTextColor(color);
+  disp.setTextSize(size);
+  disp.setCursor(x,y);
+  disp.print(distring);
+}
+
+void disp_start() {
+  // ------------------------------ 
+  // Opening Animation
+  // ------------------------------ 
+
+  int fadetime = 260;
+  for (uint16_t color=0; color<=0xFFFF; color+=0x210) {
+    disp_write("Andon", 5, 5, 2, color);
+    delay(fadetime/5);
+  }
+  delay(1000-fadetime);
+  disp_cls();
+}
+
+void disp_cls() {
+  // ------------------------------
+  // Clears Display
+  // ------------------------------ 
+
+  disp.fillScreen(ST7735_BLACK);
+}
+
+String* getStatus() {
+  // ------------------------------ 
+  // Gets the statuses
+  // ------------------------------ 
+
+  String* statuses = new String[3];
+
+  //test
+  bool esSet = true;
+  if (esSet) {
+    statuses[0] = "Status 1";
+    statuses[1] = "Status 2";
+    statuses[2] = "Status 3";
+  } else {
+    for (int i=0; i<3; i++) {
+      statuses[i] = "";
+    }
+  }
+
+  return statuses;
+}
+
+int checkButtonPress() {
+  // ------------------------------ 
+  // Checks for the buttons pressed
+  // ------------------------------ 
+
+  if (digitalRead(UP)) {
+    return 1;
+  } else if (digitalRead(SELOK)) {
+    return 2;
+  } else if (digitalRead(DOWN)) {
+    return 3;
+  } else {
+    return 0;
+  }
+}
+
 void mainmenu(){          // Main Menu
   spacing = default_spacing;
+  String* statuses = getStatus();
+
+  bool statset = (!statuses[0].isEmpty() || !statuses[1].isEmpty() || !statuses[2].isEmpty()); 
+
   if (!statset) {         // If no statuses set 
     disp_write("  Set Status..", 2, 5, 1);
     disp_write("> Settings (Press OK)", 2, 5, 2);
 
   } else {                // If statuses set
-    String statuses = getStatus();
     disp_write(statuses[0], 2, 10, 1);
     disp_write(statuses[1], 2, 10, 2);
     disp_write(statuses[2], 2, 10, 3);
   }
 
-  if (checkButtonPress()==1) {
+  if (checkButtonPress()==2) {
+    disp_cls();
     settings();           // Goto the settings menu
   }
 }
 
+void settings() {
 
-void disp_write(String distring, int size, int x, int line, int alpha = 255) {
-  int y = size*10*(line-1)+spacing;
-  static_assert(y <= 128, "Display overflow");
-
-  disp.stroke(255,255,255, alpha);
-  disp.setTextSize(size);
-  disp.text(distring, x, size*10*(line-1)+spacing);
 }
 
-void disp_start() {
-  int fadetime = 260;
-  for (int alpha=0, alpha<256; alpha+=5) {
-    disp_write("Andon", 5, 5, 2, alpha);
-    delay(fadetime/5);
-  }
-  delay(1000-fadetime);
-  disp.background(0,0,0);
+void setup() {
+  // WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+  // it is a good practice to make sure your code sets wifi mode how you want it.
+  disp.initR(INITR_BLACKTAB);
+  disp_cls();
+  disp_start();
+
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  wifiSetup();
+}
+
+void loop() {
+  wifiLoop();
 }
