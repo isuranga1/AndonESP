@@ -5,6 +5,7 @@
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 #include <time.h>
+#include <WiFi.h>
 
 #define cs    5
 #define dc    17
@@ -172,14 +173,27 @@ void callPress(){
 
   if (client.connected()) {
     if (digitalRead(CALL1)) {
+      digitalWrite(IND1, LOW );
+      digitalWrite(IND2, HIGH);
+      digitalWrite(IND3, HIGH);
       updateTime();
       webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[0] + "]");
     } else if (digitalRead(CALL2)) {
+      digitalWrite(IND1, HIGH);
+      digitalWrite(IND2, LOW );
+      digitalWrite(IND3, HIGH);
       updateTime();
       webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[1] + "]");
     } else if (digitalRead(CALL3)) {
+      digitalWrite(IND1, HIGH);
+      digitalWrite(IND2, HIGH);
+      digitalWrite(IND3, LOW );
       updateTime();
       webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[2] + "]");
+    } else {
+      digitalWrite(IND1, HIGH);
+      digitalWrite(IND2, HIGH);
+      digitalWrite(IND3, HIGH);
     }
         
   } else {
@@ -242,10 +256,13 @@ int checkButtonPress() {
   // ------------------------------ 
 
   if (digitalRead(UP)) {
+    disp_cls();
     return 1;
   } else if (digitalRead(SELOK)) {
+    disp_cls();
     return 2;
   } else if (digitalRead(DOWN)) {
+    disp_cls();
     return 3;
   } else {
     return 0;
@@ -285,16 +302,10 @@ void showSettings(int menu_item) {
   disp_write(" Exit", 2, 5, 4);
 
   // Cursor
-  switch (menu_item) {
-    case 1:
-      disp_write(">",2,5,1);
-    case 2:
-      disp_write(">",2,5,2);
-    case 3:
-      disp_write(">",2,5,3);
-    case 4:
-      disp_write(">",2,5,4);
-  }
+  if(menu_item==1)       { disp_write(">",2,5,1); }
+  else if (menu_item==2) { disp_write(">",2,5,2); }
+  else if (menu_item==3) { disp_write(">",2,5,3); }
+  else if (menu_item==4) { disp_write(">",2,5,4); }
 }
 
 
@@ -411,6 +422,17 @@ void settings() {
 
 
 void setup() {
+  pinMode(    UP,  INPUT);
+  pinMode(  DOWN,  INPUT);
+  pinMode( SELOK,  INPUT);
+  pinMode( CALL1,  INPUT);
+  pinMode( CALL2,  INPUT);
+  pinMode( CALL3,  INPUT);
+  pinMode(  IND1, OUTPUT);
+  pinMode(  IND2, OUTPUT);
+  pinMode(  IND3, OUTPUT);
+  pinMode(  DEBG, OUTPUT);
+  
   // WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
   // it is a good practice to make sure your code sets wifi mode how you want it.
   disp.initR(INITR_BLACKTAB);
@@ -421,8 +443,9 @@ void setup() {
   Serial.begin(115200);
   wifiSetup();
 
-  //Getting NTP time
-
+  digitalWrite(IND1, HIGH);
+  digitalWrite(IND2, HIGH);
+  digitalWrite(IND3, HIGH);
 }
 
 
@@ -433,6 +456,6 @@ void loop() {
   if (checkButtonPress() == 2) {
     settings();
   }
-  wifiLoop();
-  //callPress();
+  //wifiLoop();
+  callPress();
 }
