@@ -5,6 +5,7 @@
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 #include <time.h>
+#include <HTTPClient.h>
 
 #define cs    5
 #define dc    17
@@ -33,8 +34,7 @@ int default_spacing = 3;
 int refresh_rate    = 500;
 
 char path[] = "/";
-char host[] = "192.168.40.183"; // change ip to the server ////
-
+char host[] = "192.168.40.183"; // change ip to the server
 String calls[] = {"000","001","101"}; 
 
 WebSocketClient webSocketClient;
@@ -44,9 +44,10 @@ Adafruit_ST7735 disp = Adafruit_ST7735(cs, dc, rst);
 
 
 
-// ------------------------------ Functions for displaying ------------------------------ 
+// ------ Functions for displaying ----- 
 
-void disp_write(String distring, int size, int x, int line, int color = 0xFFFF) {
+void disp_write(String distring, int size, int x, int line, 
+                int color = 0xFFFF) {
   // ------------------------------ 
   // Prints onto display
   // ------------------------------ 
@@ -86,34 +87,41 @@ void disp_cls() {
 
 
 
-void wifiSetup(){ //WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
+void wifiSetup(){ 
+  // WiFiManager, Local intialization. Once its business is done, 
+  // there is no need to keep it around
   WiFiManager wm;
-  // reset settings - wipe stored credentials for testing
-  // these are stored by the esp library
+  // reset settings - wipe stored credentials for testing these 
+  // are stored by the esp library
   //wm.resetSettings();
 
   // Automatically connect using saved credentials,
-  // if connection fails, it starts an access point with the specified name ( "AutoConnectAP"),
-  // if empty will auto generate SSID, if password is blank it will be anonymous AP (wm.autoConnect())
-  // then goes into a blocking loop awaiting configuration and will return success result
+  // if connection fails, it starts an access point with the 
+  // specified name ( "AutoConnectAP"), if empty will auto generate 
+  // SSID, if password is blank it will be anonymous AP 
+  // (wm.autoConnect()) then goes into a blocking loop awaiting 
+  // configuration and will return success result
 
   bool res;
   // res = wm.autoConnect(); // auto generated AP name from chipid
   // res = wm.autoConnect("AutoConnectAP"); // anonymous ap
-  res = wm.autoConnect("AutoConnectAP","password"); // password protected ap
+  res = wm.autoConnect("AutoConnectAP","password"); 
+  // password protected ap
 
   if(!res) {
     Serial.println("Failed to connect");
     // ESP.restart();
   } else {
     //if you get here you have connected to the WiFi    
-    Serial.println("connected...yeey :)"); // display the ssid and connected status
+    Serial.println("connected...yeey :)"); 
+    // display the ssid and connected status
   }
 
 
 
   // Connect to the websocket server
-  if (client.connect("192.168.40.183", 443)) {  // change ip to the server
+  if (client.connect("192.168.40.183", 443)) {  
+    // change ip to the server
     Serial.println("Connected");
   } else {
     Serial.println("Connection failed.");
@@ -173,13 +181,23 @@ void callPress(){
   if (client.connected()) {
     if (digitalRead(CALL1)) {
       updateTime();
-      webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[0] + "]");
+      webSocketClient.sendData("[" + String(curr_hour) + "," + 
+                               String(curr_mins) + "," + console_id 
+                               + "," + calls[0] + "]");
     } else if (digitalRead(CALL2)) {
       updateTime();
-      webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[1] + "]");
+      webSocketClient.sendData("[" + String(curr_hour) + "," + 
+                               String(curr_mins) + "," + console_id 
+                               + "," + calls[1] + "]");
     } else if (digitalRead(CALL3)) {
       updateTime();
-      webSocketClient.sendData("[" + String(curr_hour) + "," + String(curr_mins) + "," + console_id + "," + calls[2] + "]");
+      webSocketClient.sendData("[" + String(curr_hour) + "," + 
+                               String(curr_mins) + "," + console_id 
+                               + "," + calls[2] + "]");
+    } else {
+      webSocketClient.sendData("[" + String(curr_hour) + "," + 
+                               String(curr_mins) + "," + console_id 
+                               + "," + calls[2] + "]");
     }
         
   } else {
@@ -218,11 +236,11 @@ void updateTime() {
 
 void getCalls(String & call1, String & call2, String & call3) {
   // ------------------------------ 
-  // Gets the statuses                                                                    ***** EDIT THIS *****
+  // Gets the statuses                                                                    
   // ------------------------------ 
 
   //test
-  bool esSet = true;
+  bool esSet = false;
   if (esSet) {
     call1 = "Status 1";
     call2 = "Status 2";
@@ -231,6 +249,31 @@ void getCalls(String & call1, String & call2, String & call3) {
     call1 = "";
     call2 = "";
     call3 = "";
+  }
+
+  if(WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverName);
+
+    int httpResponseCode = http.GET();
+    if(httpResponseCode > 0) {
+      String payload = http.getString();
+      Serial.println("HTTP Response code: " + String(httpResponseCode));
+      Serial.println("Payload: " + payload);
+      
+      // Parse the response (assuming JSON format)
+      DynamicJsonDocument doc(1024);
+      deserializeJson(doc, payload);
+      
+      call1 = doc["call1"].as<String>();
+      call2 = doc["call2"].as<String>();
+      call3 = doc["call3"].as<String>();
+    } else {
+      Serial.println("Error on HTTP request");
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi not connected");
   }
 }
 
@@ -258,7 +301,8 @@ void showMainMenu(){      // Main Menu
   spacing = default_spacing;
   getCalls(calls[0], calls[1], calls[2]);
 
-  bool statset = (!calls[0].isEmpty() || !calls[1].isEmpty() || !calls[2].isEmpty()); 
+  bool statset = (!calls[0].isEmpty() || !calls[1].isEmpty() 
+                  || !calls[2].isEmpty()); 
 
   if (!statset) {         // If no statuses set 
     disp_write("  Do the initial Setup..", 2, 5, 1);
@@ -298,19 +342,6 @@ void showSettings(int menu_item) {
 }
 
 
-
-void connectWiFi() {
-
-}
-
-
-
-void chooseCalls() {
-
-}
-
-
-
 void showTimezone(String timezone_name, int menu_item) {
   // -----
   // Displaying the menu for setting timezone
@@ -333,13 +364,28 @@ void setTimezone() {
   // -----
 
   // Contains all the standard timezones and their offsets
-  int timezone_times[]    = {-43200,-39600,-36000, -34200, -32400, -28800, -25200, -21600, -18000, -14400, -12600, -10800, -7200, -3600, 
-                             0, 3600, 7200, 10800, 12600, 14400, 16200, 18000, 19800, 20700, 21600, 23400, 25200, 28800, 31500, 32400, 
-                             34200, 36000, 37800, 39600, 43200, 45900, 46800, 50400};
-  String timezone_names[] = {" -12:00", " -11:00", " -10:00", "  -9:30", "  -9:00", "  -8:00", "  -7:00", "  -6:00", "  -5:00", "  -4:00", 
-                             "  -3:30", "  -3:00", "  -2:00", "  -1:00", "+/-0:00", "  +1:00", "  +2:00", "  +3:00", "  +3:30", "  +4:00", 
-                             "  +4:30", "  +5:00", "  +5:30", "  +5:45", "  +6:00", "  +6:30", "  +7:00", "  +8:00", "  +8:45", "  +9:00", 
-                             "  +9:30", " +10:00", " +10:30", " +11:00", " +12:00", " +12:45", " +13:00", " +14:00"};
+  int timezone_times[]    = {-43200,-39600,-36000, -34200, -32400,
+                             -28800, -25200, -21600, -18000, -14400, 
+                             -12600, -10800, -7200, -3600, 0, 3600, 
+                             7200, 10800, 12600, 14400, 16200, 
+                             18000, 19800, 20700, 21600, 23400, 
+                             25200, 28800, 31500, 32400, 34200, 
+                             36000, 37800, 39600, 43200, 45900, 
+                             46800, 50400};
+                             
+  String timezone_names[] = {" -12:00", " -11:00", " -10:00", 
+                             "  -9:30", "  -9:00", "  -8:00", 
+                             "  -7:00", "  -6:00", "  -5:00", 
+                             "  -4:00", "  -3:30", "  -3:00", 
+                             "  -2:00", "  -1:00", "+/-0:00", 
+                             "  +1:00", "  +2:00", "  +3:00", 
+                             "  +3:30", "  +4:00", "  +4:30", 
+                             "  +5:00", "  +5:30", "  +5:45", 
+                             "  +6:00", "  +6:30", "  +7:00", 
+                             "  +8:00", "  +8:45", "  +9:00", 
+                             "  +9:30", " +10:00", " +10:30", 
+                             " +11:00", " +12:00", " +12:45", 
+                             " +13:00", " +14:00"};
   
   int menu_item = 1;
   int button = 0;
@@ -359,11 +405,13 @@ void setTimezone() {
       if (menu_item>2) { menu_item = menu_item - 2; }
 
     } else if (button == 1) {
-      if (menu_item == 1) {                           // Incrementing timezone
+      if (menu_item == 1) {                           
+        // Incrementing timezone
         timezone++;
         if (timezone>37) { timezone = timezone - 38; }
 
-      } else {                                        // Saving and updating the NTP connection settings
+      } else {                                        
+        // Saving and updating the NTP connection settings
         UTC_OFFSET = timezone_times[timezone];
         configTime(UTC_OFFSET, UTC_OFFSET_DST, NTP_SERVER);
         break;
@@ -411,8 +459,9 @@ void settings() {
 
 
 void setup() {
-  // WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
-  // it is a good practice to make sure your code sets wifi mode how you want it.
+  // WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to 
+  // STA+AP it is a good practice to make sure your code sets wifi 
+  // mode how you want it.
   disp.initR(INITR_BLACKTAB);
   disp_cls();
   disp_start();
