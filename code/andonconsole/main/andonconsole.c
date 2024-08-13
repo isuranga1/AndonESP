@@ -77,24 +77,18 @@ DEALINGS IN THE SOFTWARE. */
 #define IND2  26
 #define IND3  27
 
+// Enable registers
+volatile uint32_t* gpio_enable_reg   = (volatile uint32_t*) GPIO_ENABLE_REG;
+// Output register
+volatile uint32_t* gpio_out_w1ts_reg = (volatile uint32_t*) GPIO_OUT_W1TS_REG;
+volatile uint32_t* gpio_out_w1tc_reg = (volatile uint32_t*) GPIO_OUT_W1TC_REG;
+// Input register
+volatile uint32_t* gpio_in_reg       = (volatile uint32_t*) GPIO_IN_REG;
+
 void gpioSetup() {
-    // -- -- Defining GPIO pins -- --
-    // Enable registers
-    volatile uint32_t* gpio_enable_reg = (volatile uint32_t*)
-                                           GPIO_ENABLE_REG;
-
     // Inputs left 0, outputs set to 1
-    *gpio_enable_reg |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT);
-
-    // Output register
-    volatile uint32_t* gpio_out_w1ts_reg = (volatile uint32_t*) 
-                                             GPIO_OUT_W1TS_REG;
-
-    volatile uint32_t* gpio_out_w1tc_reg = (volatile uint32_t*) 
-                                             GPIO_OUT_W1TC_REG;
-
-    // Input register
-    volatile uint32_t* gpio_in_reg = (volatile uint32_t*) GPIO_IN_REG;
+    *gpio_enable_reg   |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT);
+    *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3); // Initialises to 0
 }
 
 // console ID to be defined in building
