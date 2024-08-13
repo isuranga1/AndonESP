@@ -504,15 +504,15 @@ void callPress(){
         const char* call2 = "";
         const char* call3 = "";
 
-        if (*gpio_in_reg & (1 << CALL1)) {
+        if (REG_READ(gpio_in_reg) & (1 << CALL1)) {
             call1 = calls[0].status;
             *gpio_out_w1ts_reg = (1 << IND1);
 
-        } else if (*gpio_in_reg & (1 << CALL2)) {
+        } else if (REG_READ(gpio_in_reg) & (1 << CALL2)) {
             call2 = calls[1].status;
             *gpio_out_w1ts_reg = (1 << IND2);
 
-        } else if (*gpio_in_reg & (1 << CALL3)) {
+        } else if (REG_READ(gpio_in_reg) & (1 << CALL3)) {
             call3 = calls[2].status;
             *gpio_out_w1ts_reg = (1 << IND3);
         
@@ -587,11 +587,11 @@ void disp_cls() {
 int checkButtonPress() {
     // -- -- Checks for the buttons pressed -- -- 
 
-    if (*gpio_in_reg & (1 << UP)) {
+    if (REG_READ(gpio_in_reg) & (1 << UP)) {
         return 1;
-    } else if (*gpio_in_reg & (1 << SELOK)) {
+    } else if (REG_READ(gpio_in_reg) & (1 << SELOK)) {
         return 2;
-    } else if (*gpio_in_reg & (1 << DOWN)) {
+    } else if (REG_READ(gpio_in_reg) & (1 << DOWN)) {
         return 3;
     } else {
         return 0;
