@@ -77,24 +77,18 @@ DEALINGS IN THE SOFTWARE. */
 #define IND2  26
 #define IND3  27
 
+// Enable registers
+volatile uint32_t* gpio_enable_reg   = (volatile uint32_t*) GPIO_ENABLE_REG;
+// Output register
+volatile uint32_t* gpio_out_w1ts_reg = (volatile uint32_t*) GPIO_OUT_W1TS_REG;
+volatile uint32_t* gpio_out_w1tc_reg = (volatile uint32_t*) GPIO_OUT_W1TC_REG;
+// Input register
+volatile uint32_t* gpio_in_reg       = (volatile uint32_t*) GPIO_IN_REG;
+
 void gpioSetup() {
-    // -- -- Defining GPIO pins -- --
-    // Enable registers
-    volatile uint32_t* gpio_enable_reg = (volatile uint32_t*)
-                                           GPIO_ENABLE_REG;
-
     // Inputs left 0, outputs set to 1
-    *gpio_enable_reg |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT);
-
-    // Output register
-    volatile uint32_t* gpio_out_w1ts_reg = (volatile uint32_t*) 
-                                             GPIO_OUT_W1TS_REG;
-
-    volatile uint32_t* gpio_out_w1tc_reg = (volatile uint32_t*) 
-                                             GPIO_OUT_W1TC_REG;
-
-    // Input register
-    volatile uint32_t* gpio_in_reg = (volatile uint32_t*) GPIO_IN_REG;
+    *gpio_enable_reg   |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT);
+    *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3); // Initialises to 0
 }
 
 // console ID to be defined in building
@@ -510,15 +504,15 @@ void callPress(){
         const char* call2 = "";
         const char* call3 = "";
 
-        if (*gpio_in_reg & (1 << CALL1)) {
+        if (REG_READ(gpio_in_reg) & (1 << CALL1)) {
             call1 = calls[0].status;
             *gpio_out_w1ts_reg = (1 << IND1);
 
-        } else if (*gpio_in_reg & (1 << CALL2)) {
+        } else if (REG_READ(gpio_in_reg) & (1 << CALL2)) {
             call2 = calls[1].status;
             *gpio_out_w1ts_reg = (1 << IND2);
 
-        } else if (*gpio_in_reg & (1 << CALL3)) {
+        } else if (REG_READ(gpio_in_reg) & (1 << CALL3)) {
             call3 = calls[2].status;
             *gpio_out_w1ts_reg = (1 << IND3);
         
@@ -593,11 +587,11 @@ void disp_cls() {
 int checkButtonPress() {
     // -- -- Checks for the buttons pressed -- -- 
 
-    if (*gpio_in_reg & (1 << UP)) {
+    if (REG_READ(gpio_in_reg) & (1 << UP)) {
         return 1;
-    } else if (*gpio_in_reg & (1 << SELOK)) {
+    } else if (REG_READ(gpio_in_reg) & (1 << SELOK)) {
         return 2;
-    } else if (*gpio_in_reg & (1 << DOWN)) {
+    } else if (REG_READ(gpio_in_reg) & (1 << DOWN)) {
         return 3;
     } else {
         return 0;
