@@ -37,6 +37,7 @@ DEALINGS IN THE SOFTWARE. */
 
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -93,7 +94,7 @@ void gpioSetup() {
 
 // console ID to be defined in building
 static const char *TAG_CODE = "code";
-string websocket_server_uri = "192.168.40.183"
+char websocket_server_uri [] = "192.168.40.183"
 
 int spacing         = 3;  // Linespacing for the display
 int default_spacing = 3;
@@ -103,31 +104,56 @@ const int MAX_CALL_RECORDS = 50; // Adjust as needed
 const int MAX_DEPT_RECORDS = 50; // Adjust as needed
 
 struct Callrecord {
-    string status;
-    string mancalldesc;
-    string mancallto;
+    char *status;
+    char *mancalldesc;
+    char *mancallto;
 };
 
 struct Deptrecord {
-    string deptname;
+    char *deptname;
     int deptid;
 };
 
-Callrecord callRecords[MAX_CALL_RECORDS];
+struct Callrecord callRecords[MAX_CALL_RECORDS];
 int callRecordCount = 0;
 
-Deptrecord deptRecords[MAX_DEPT_RECORDS];
+struct Deptrecord deptRecords[MAX_DEPT_RECORDS];
 int deptRecordCount = 0;
 
-string department_id = "";
-Deptrecord department;
-Callrecord calls[3] = {
-    {"", "", ""},
-    {"", "", ""},
-    {"", "", ""}
+char *department_id = NULL;
+struct Deptrecord department;
+struct Callrecord calls[3] = {
+    {NULL,NULL,NULL},
+    {NULL,NULL,NULL},
+    {NULL,NULL,NULL}
 };
 
+// Set Callrecord
+void setCallrecord(struct Callrecord *record, const char *status, const char *desc, const char *to) {
+    if (record->status != NULL) free(record->status);
+    if (record->mancalldesc != NULL) free(record->mancalldesc);
+    if (record->mancallto != NULL) free(record->mancallto);
 
+    // Allocate new memory and copy values
+    record->status = malloc(strlen(status) + 1);
+    record->mancalldesc = malloc(strlen(desc) + 1);
+    record->mancallto = malloc(strlen(to) + 1);
+
+    if (record->status != NULL) strcpy(record->status, status);
+    if (record->mancalldesc != NULL) strcpy(record->mancalldesc, desc);
+    if (record->mancallto != NULL) strcpy(record->mancallto, to);
+}
+
+// Set Deptrecord
+void setDeptrecord(struct Deptrecord *record, const char *dept, int id) {
+    if (record->deptname != NULL) free (record->deptname);
+
+    record->deptname = malloc(strlen(dept) + 1);
+    if (record->deptname != NULL) {
+        strcpy(record->deptname, dept);
+    }
+    record->deptid = id;
+}
 
 
 
