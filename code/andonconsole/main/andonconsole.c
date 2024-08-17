@@ -7,6 +7,10 @@ Project: Wireless Reconfigurable Andon System with Maintenance Prediction
 Parts of the code taken from following repositories:
 - Boris Lovosevic: TFT Display Code
   Copyright (c) 2017 Boris Lovosevic
+- Jeremy Huffman: TFT Display Code - CMake suppport
+  Copyright (c) 2021 Jeremy Huffman
+- Luis D. Gomez: TFT Controller Intergration
+  Copyright (c) 2020 Luis Diego Gomez
 - Espressif Systems (Shanghai): WPS connection, Websockets, HTTP GET
   Copyright (c) 2021 Espressif Systems (Shanghai)
 - Fateh Ali: WiFi Event Handler
@@ -35,29 +39,27 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
 DEALINGS IN THE SOFTWARE. */
 
-#include <stdio.h>
+
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <stdarg.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "esp_log.h"
-#include "esp_wps.h"
+#include "esp_err.h"
+//#include "esp_wps.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
-#include "esp_http_client.h"
-#include "esp_netif.h"
+// #include "esp_http_client.h"
+//#include "esp_netif.h"
 #include "esp_websocket_client.h"
 #include "tft.h"
-#include "tftspi.h"
+#include "tft_controller.h"
+#include "driver/gpio.h"
 #include "cJSON.h"
-
-// Define registers
-#define GPIO_OUT_W1TS_REG 0x3FF44008
-#define GPIO_OUT_W1TC_REG 0x3FF4400C
-#define GPIO_ENABLE_REG   0x3FF44020
-#define GPIO_IN_REG       0x3FF4403C
 
 // Define pins
 #define CS    5         // Display SPI
@@ -78,6 +80,14 @@ DEALINGS IN THE SOFTWARE. */
 #define IND2  26
 #define IND3  27
 
+#define DEBUG 2        // Lights up to warn
+
+// Define registers
+#define GPIO_OUT_W1TS_REG 0x3FF44008
+#define GPIO_OUT_W1TC_REG 0x3FF4400C
+#define GPIO_ENABLE_REG   0x3FF44020
+#define GPIO_IN_REG       0x3FF4403C
+
 // Enable registers
 volatile uint32_t* gpio_enable_reg   = (volatile uint32_t*) GPIO_ENABLE_REG;
 // Output register
@@ -86,22 +96,23 @@ volatile uint32_t* gpio_out_w1tc_reg = (volatile uint32_t*) GPIO_OUT_W1TC_REG;
 // Input register
 volatile uint32_t* gpio_in_reg       = (volatile uint32_t*) GPIO_IN_REG;
 
-void gpioSetup() {
+void gpio_setup() {
     // Inputs left 0, outputs set to 1
-    *gpio_enable_reg   |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT);
-    *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3); // Initialises to 0
+    *gpio_enable_reg   |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT) | (1<<DEBUG);
+    *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3) | (1<<DEBUG); // Initialises to 0
 }
 
 // console ID to be defined in building
-static const char *TAG_CODE = "code";
-char websocket_server_uri [] = "192.168.40.183"
+static const char *TAG_CODE = "Code";
+char websocket_server_uri[] = "192.168.40.183";
 
-int spacing         = 3;  // Linespacing for the display
-int default_spacing = 3;
+int spacing         = 2;  // Linespacing for the display
+int default_spacing = 2;
 int refresh_rate    = 500;
+int highlight_padding = 3;
 
-const int MAX_CALL_RECORDS = 50; // Adjust as needed
-const int MAX_DEPT_RECORDS = 50; // Adjust as needed
+#define MAX_CALL_RECORDS 50; // Adjust as needed
+#define MAX_DEPT_RECORDS 50; // Adjust as needed
 
 struct Callrecord {
     char *status;
@@ -155,213 +166,134 @@ void setDeptrecord(struct Deptrecord *record, const char *dept, int id) {
     record->deptid = id;
 }
 
-
-
 // --------------------------------------------------------
 // -------------- Functions for WiFi ----------------------
 // -------------------------------------------------------- 
+static const char *TAG_WIFI = "WiFi";
+static const char *TAG_SOCK = "WebSocket";
 
-// Set WPS mode via project configuration
-#define WPS_MODE WPS_TYPE_PBC
-#define MAX_RETRY_ATTEMPTS 2
-#define MAX_WPS_AP_CRED    5
+#define WIFI_SSID       "Isuranga"
+#define WIFI_PASS       "Amalyisuranga"
+#define INPUT_PIN       GPIO_NUM_15
+#define WEBSOCKET_URI   "wss://192.168.1.6:443/"
 
-static const char *TAG_WIFI = "wifi";
-static esp_wps_config_t config = WPS_CONFIG_INIT_DEFAULT(WPS_MODE);
-static wifi_config_t wps_ap_creds[MAX_WPS_AP_CRED];
-static int s_ap_creds_num = 0;
-static int s_retry_num = 0;
+esp_websocket_client_handle_t client;
 
-static esp_websocket_client_handle_t client;
-
-// Event handler
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                                int32_t event_id, void* event_data) {
-    static int ap_idx = 1;
-
-    switch (event_id) {
-        case WIFI_EVENT_STA_START:
-            ESP_LOGI(TAG_WIFI, "WIFI_EVENT_STA_START");
-            break;
-
-        case WIFI_EVENT_STA_DISCONNECTED:
-            ESP_LOGI(TAG_WIFI, "WIFI_EVENT_STA_DISCONNECTED");
-            if (s_retry_num < MAX_RETRY_ATTEMPTS) {
-                esp_wifi_connect();
-                s_retry_num++;
-            
-            } else if (ap_idx < s_ap_creds_num) {
-                // Try the next AP credential if first one fails
-
-                if (ap_idx < s_ap_creds_num) {
-                    ESP_LOGI(TAG_WIFI, 
-                             "Connecting to SSID: %s, Passphrase: %s",
-                             wps_ap_creds[ap_idx].sta.ssid, 
-                             wps_ap_creds[ap_idx].sta.password);
-            
-                    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, 
-                                    &wps_ap_creds[ap_idx++]) );
-                                    esp_wifi_connect();
-                }
-                s_retry_num = 0;
-            
-            } else {
-                ESP_LOGI(TAG_WIFI, "Failed to connect!");
-            }
-
-            break;
-        
-        case WIFI_EVENT_STA_WPS_ER_SUCCESS:
-            ESP_LOGI(TAG_WIFI, "WIFI_EVENT_STA_WPS_ER_SUCCESS");
-            {
-                wifi_event_sta_wps_er_success_t *evt =
-                    (wifi_event_sta_wps_er_success_t *)event_data;
-                int i;
-
-                if (evt) {
-                    s_ap_creds_num = evt->ap_cred_cnt;
-                    for (i = 0; i < s_ap_creds_num; i++) {
-                        memcpy(wps_ap_creds[i].sta.ssid, 
-                               evt->ap_cred[i].ssid,
-                               sizeof(evt->ap_cred[i].ssid));
-        
-                        memcpy(wps_ap_creds[i].sta.password, 
-                               evt-> ap_cred[i].passphrase,
-                               sizeof(evt->ap_cred[i].passphrase));
-                    }
-                    // If multiple AP credentials are received from WPS, 
-                    // connect with first one
-                    ESP_LOGI(TAG_WIFI, 
-                             "Connecting to SSID: %s, Passphrase: %s",
-                             wps_ap_creds[0].sta.ssid, 
-                             wps_ap_creds[0].sta.password);
-        
-                    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, 
-                                    &wps_ap_creds[0]) );
-                }
-                /*
-                   If only one AP credential is received from WPS, there 
-                   will be no event data and
-                   esp_wifi_set_config() is already called by WPS modules 
-                   for backward compatibility
-                   with legacy apps. So directly attempt connection here.
-                 */
-                ESP_ERROR_CHECK(esp_wifi_wps_disable());
-                esp_wifi_connect();
-            }
-            break;
-        
-        case WIFI_EVENT_STA_WPS_ER_FAILED:
-            ESP_LOGI(TAG_WIFI, "WIFI_EVENT_STA_WPS_ER_FAILED");
-            ESP_ERROR_CHECK(esp_wifi_wps_disable());
-            ESP_ERROR_CHECK(esp_wifi_wps_enable(&config));
-            ESP_ERROR_CHECK(esp_wifi_wps_start(0));
-            break;
-        
-        case WIFI_EVENT_STA_WPS_ER_TIMEOUT:
-            ESP_LOGI(TAG_WIFI, "WIFI_EVENT_STA_WPS_ER_TIMEOUT");
-            ESP_ERROR_CHECK(esp_wifi_wps_disable());
-            ESP_ERROR_CHECK(esp_wifi_wps_enable(&config));
-            ESP_ERROR_CHECK(esp_wifi_wps_start(0));
-            break;
-        
-        default:
-            break;
-    }
-}
-
-// Event handler for when credentials received
-static void got_ip_event_handler(void* arg, esp_event_base_t event_base,
-                                 int32_t event_id, void* event_data) {
-    ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-    ESP_LOGI(TAG_WIFI, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
-}
-
-// Initialise WiFi as STA and start WPS
-static void start_wps(void) {
+// Connecting to Wifi
+static void wifi_init(void) {
+    ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    assert(sta_netif);
+    esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT,
-                                               ESP_EVENT_ANY_ID, 
-                                               &wifi_event_handler, NULL));
-    
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, 
-                                               IP_EVENT_STA_GOT_IP, 
-                                               &got_ip_event_handler, 
-                                               NULL));
-
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG_WIFI, "start wps...");
-
-    ESP_ERROR_CHECK(esp_wifi_wps_enable(&config));
-    ESP_ERROR_CHECK(esp_wifi_wps_start(0));
+    ESP_ERROR_CHECK(esp_wifi_connect());
 }
 
+// Event handling: Websockets
+static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
+    esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
 
-// ---------- Establishing WebSocket Connection ----------
-// Event Handler
-static void websocket_event_handler(void *handler_args, esp_event_base_t    
-                                    base, int32_t event_id, 
-                                    void *event_data) {
-    
-    esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)
-                                        event_data;
-    
-    esp_websocket_client_handle_t client = (esp_websocket_client_handle_t) 
-                                            handler_args;
     switch (event_id) {
         case WEBSOCKET_EVENT_CONNECTED:
-            ESP_LOGI(TAG_WIFI, "WebSocket connected");
+            ESP_LOGI(TAG_SOCK, "WebSocket connected");
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG_WIFI, "WebSocket disconnected, code: %d", 
-            data->status_code);
+            ESP_LOGI(TAG_SOCK, "WebSocket disconnected");
             break;
         case WEBSOCKET_EVENT_DATA:
-            ESP_LOGI(TAG_WIFI, "WebSocket received data: %.*s", 
-                     data->data_len, (char *)data->data_ptr);
+            if (data->op_code == WS_TRANSPORT_OPCODES_TEXT) {
+                ESP_LOGI(TAG_SOCK, "Received data: %.*s", data->data_len, (char *)data->data_ptr);
+            }
             break;
         default:
             break;
     }
 }
 
-// Sending socket
-void send_websocket_message(esp_websocket_client_handle_t client, 
-                            const char *message) {
-    if (esp_websocket_client_is_connected(client)) {
-        esp_websocket_client_send_text(client, message, strlen(message), 
-                                       portMAX_DELAY);
-    } else {
-        ESP_LOGE(TAG_WIFI, "WebSocket client is not connected.");
-    }
-}
 
-esp_websocket_client_handle_t websocket_client_init(void) {
-    esp_websocket_client_config_t ws_cfg = {
-        .uri = websocket_server_uri, // your WebSocket server URL
+static void websocket_init(void) {
+    esp_websocket_client_config_t websocket_cfg = {
+        .uri = WEBSOCKET_URI,
+        .transport = WEBSOCKET_TRANSPORT_OVER_TCP,  // Use TCP transport (non-SSL)
     };
 
-    esp_websocket_client_handle_t client = esp_websocket_client_init(
-                                                    &ws_cfg);
-    
-    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, 
-                                  websocket_event_handler, client);
-    
+    esp_websocket_client_handle_t client = esp_websocket_client_init(&websocket_cfg);
+    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, websocket_event_handler, NULL);
     esp_websocket_client_start(client);
-
-    return client;
 }
 
 
+
+static void websocket_task(void *pvParameters) {
+    if (esp_websocket_client_is_connected(client)) {
+        bool call1 = REG_READ(gpio_in_reg)&(1 << CALL1);
+        bool call2 = REG_READ(gpio_in_reg)&(1 << CALL2);
+        bool call3 = REG_READ(gpio_in_reg)&(1 << CALL3);
+
+        cJSON *doc1 = cJSON_CreateObject();
+        cJSON *doc2 = cJSON_CreateObject();
+
+        cJSON_AddNumberToObject(doc1, "consoleid", 500);
+        cJSON_AddNumberToObject(doc1, "department", 14);
+        cJSON_AddStringToObject(doc1, "call1", call1 ? "Red" : "");
+        cJSON_AddStringToObject(doc1, "call2", call2 ? "Green" : "");
+        cJSON_AddStringToObject(doc1, "call3", call3 ? "White" : "");
+        cJSON_AddStringToObject(doc1, "oldcall", "");
+
+        cJSON_AddStringToObject(doc2, "stat1", call1 ? "70" : "4550");
+        cJSON_AddStringToObject(doc2, "stat2", "14");
+        cJSON_AddStringToObject(doc2, "stat3", "434");
+
+        char *jsonString1 = cJSON_Print(doc1);
+        esp_websocket_client_send_text(client, jsonString1, strlen(jsonString1), portMAX_DELAY);
+
+        cJSON_Delete(doc1);
+        cJSON_Delete(doc2);
+        free(jsonString1);
+
+        ESP_LOGI(TAG_SOCK, "Sent data to backend");
+
+        if (call1) {
+            *gpio_out_w1ts_reg |= (1<<IND1);
+            ESP_LOGI(TAG_CODE, "Call1");
+        } 
+
+        if (call2) {
+            *gpio_out_w1ts_reg |= (1<<IND2);
+            ESP_LOGI(TAG_CODE, "Call2");
+        }
+
+        if (call3) {
+            *gpio_out_w1ts_reg |= (1<<IND3);
+            ESP_LOGI(TAG_CODE, "Call3");
+        }
+
+        if (!call1 & !call2 & !call3) {
+            *gpio_out_w1tc_reg |= (1<<IND1) | (1<<IND2) | (1<<IND3);
+        }
+    } else {
+        ESP_LOGW(TAG_SOCK, "WebSocket client is not connected");
+    }
+    vTaskDelay(pdMS_TO_TICKS(3000));
+}
+
+// -----------------------------------------------------------
+// -------------- Functions for HTTP download ----------------
+// ----------------------------------------------------------- 
+
+/*
 // ----------- Getting calls and departments via http ----------
 // Event handler
 static const char *TAG_HTTP = "http";
@@ -512,102 +444,63 @@ void fetchDeptRecords() {
         esp_http_client_cleanup(client);
     }
 }
-
-
-
-
-
-// --------------------------------------------------------
-// -------------- Functions for Calling -------------------
-// -------------------------------------------------------- 
-
-void callPress(){
-    // -- -- Sending data -- --
-
-    if (esp_websocket_client_is_connected(client)) {
-        char jsonString[200];
-        const char* call1 = "";
-        const char* call2 = "";
-        const char* call3 = "";
-
-        if (REG_READ(gpio_in_reg) & (1 << CALL1)) {
-            call1 = calls[0].status;
-            *gpio_out_w1ts_reg = (1 << IND1);
-
-        } else if (REG_READ(gpio_in_reg) & (1 << CALL2)) {
-            call2 = calls[1].status;
-            *gpio_out_w1ts_reg = (1 << IND2);
-
-        } else if (REG_READ(gpio_in_reg) & (1 << CALL3)) {
-            call3 = calls[2].status;
-            *gpio_out_w1ts_reg = (1 << IND3);
-        
-        } else {
-            *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3);
-        }
-
-        snprintf(jsonString, sizeof(jsonString),
-                "{\"consoleid\":%d,\"department\":%d,\"call1\":\"%s\",
-                \"call2\":\"%s\",\"call3\":\"%s\",\"oldcall\":\"%s\"}",
-                console_id, department_id, call1, call2, call3, "");
-
-        send_websocket_message(client, jasonString);
-        ESP_LOGI(TAG_WIFI, "Frame sent");
-            
-    } else {
-        ESP_LOGI(TAG_WIFI, "Client disconnected.");
-        while (true) {
-            // Hang on disconnect.
-        }
-    }
-    
-    // wait to fully let the client disconnect
-    vTaskDelay(pdMS_TO_TICKS(3000));
-}
-
-
-
+*/
 
 
 // --------------------------------------------------------
 // -------------- Functions for displaying ----------------
 // -------------------------------------------------------- 
-static const char *TAG_DISP = "display";
-#define SPI_BUS TFT_HSPI_HOST
+static const char *TAG_DISP = "Display";
 
-void disp_write(string distring, int x, int line) {
-    // -- -- Prints onto display -- --
-
-    int y = size*10*(line-1)+spacing;
+void disp_write(const char *distring, int x, int line, bool highlight) {
+    int y = 10*(line-1)*spacing+25;
     TFT_setFont(DEFAULT_FONT, NULL);
-    TFT_print(distring, x, y);
-}
 
-void disp_start() {
-    // -- -- Opening Animation -- -- 
-
-    int fadetime = 260;
-    for (uint8_t col=0; col<=255; col+=1) {
-        _fg = (color_t){col, col, col};
-        disp_write("Andon", 5, 2);
-        vTaskDelay(pdMS_TO_TICKS(fadetime/5));
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000-fadetime));
-    disp_cls();
+    if (!highlight) {
+        // -- -- Prints onto display -- --
+        TFT_fillRect(x-highlight_padding, y-highlight_padding, tft_width-2*(x-highlight_padding), TFT_getfontheight()+2*highlight_padding, TFT_BLACK);
+        tft_fg = TFT_WHITE;
+        tft_bg = TFT_BLACK;
+        TFT_print(distring,x,y);
+    } else {
+        // If back has to be highlighted
+        TFT_fillRect(x-highlight_padding, y-highlight_padding, tft_width-2*(x-highlight_padding), TFT_getfontheight()+2*highlight_padding, TFT_WHITE);
+        tft_fg = TFT_BLACK;
+        tft_bg = TFT_WHITE;
+        TFT_print(distring,x,y);
+        tft_fg = TFT_WHITE;
+        tft_bg = TFT_BLACK;
+    }    
 }
 
 void disp_cls() {
     // -- -- Clears Display -- -- 
     TFT_fillScreen(TFT_BLACK);
-    TFT_resetclipwin();
 }
 
-
-
+void disp_start() {
+    // -- -- Opening Animation -- -- 
+    disp_write("Andon", 5, 2, false);
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    disp_cls();
+    ESP_LOGI(TAG_DISP,"Start - Display Started");
+}
 
 
 // --------------------------------------------------------
 // -------------- Functions for Menu ----------------------
+// 
+// The main menu is structured as below:
+// 
+// Main Menu
+//   |___ Settings
+//          |____ Connect to Server
+//          |____ Choose Calls
+//          |       |___ Choose Call 1
+//          |       |___ Choose Call 2
+//          |       |___ Choose Call 3
+//          |____ Set Department
+// 
 // -------------------------------------------------------- 
 
 int checkButtonPress() {
@@ -624,83 +517,9 @@ int checkButtonPress() {
     }
 }
 
-void showMainMenu(){      // Main Menu
-    spacing = default_spacing;
-
-    bool statset = (!calls[0].isEmpty() || !calls[1].isEmpty() 
-                    || !calls[2].isEmpty()); 
-
-    if (!statset) {         // If no statuses set 
-        disp_write("  Do the initial Setup..", 5, 1);
-        disp_write("> Settings (Press OK)", 5, 2);
-
-    } else {                // If statuses set
-        disp_write(calls[0].status, 10, 1);
-        disp_write(calls[1].status, 10, 2);
-        disp_write(calls[2].status, 10, 3);
-        disp_write(">Settings", 10, 4);
-    }
-
-    if (checkButtonPress()==2) {
-        disp_cls();
-        settings();           // Goto the settings menu
-    }
-}
-
-void showSettings(int menu_item) {
-    disp_write(" Connect to WiFi", 5, 1);
-    disp_write(" Choose Calls", 5, 2);
-    disp_write(" Set Department", 5, 3);
-    disp_write(" Exit", 5, 4);
-
-    // Cursor
-    switch (menu_item) {
-        case 1:
-            disp_write(">",5,1);
-        case 2:
-            disp_write(">",5,2);
-        case 3:
-            disp_write(">",5,3);
-        case 4:
-            disp_write(">",5,4);
-    }
-}
-
-void settings() {
-    int menu_item = 1;
-    int button = 0;
-
-    while (true) {
-        showSettings(menu_item);           // Increment
-        vTaskDelay(pdMS_TO_TICKS(refresh_rate));
-        button = checkButtonPress();
-
-        if (button==1) {
-            menu_item = (menu_item==0) ? 4 : menu_item-1;
-            disp_cls();
-
-        } else if (button==3) {           // Decrement
-            menu_item = (menu_item==5) ? 1 : menu_item+1;
-            disp_cls();
-
-        } else if (button==2) {           // Select
-        if (menu_item==1) {
-            disp_cls();
-            connectWiFi();
-        } else if (menu_item==2) {
-            disp_cls();
-            setCalls();
-        } else if (menu_item==3) {
-            disp_cls();
-            setDepartment();
-        } else {
-            break;
-        }
-        }
-    }
-}
-
+/*
 void connectWiFi() {
+    
     // Do nothing
     int menu_item = 1;
     int button = 0;
@@ -752,150 +571,191 @@ void connectWiFi() {
     }
 
     websocket_server_uri = "192:168:"+ccc+":"+ddd;
-}
-
-void showConnectWiFi(int menu_item, string ccc, string ccc) {
-    disp_write("Set the IP of Back-end", 5, 2);
-    if (menu_item == 1) {
-        disp_write("192:168:>" + ccc + ":" + ddd, 5, 2);
-    } else if (menu_item == 2) {
-        disp_write("192:168:" + ccc + ":>" + ddd, 5, 2);
-    } 
     
 }
 
-void showSetCalls(int menu_item) {
-    int button = 0;
-    if (calls[0].isEmpty()) {
-        disp_write(" Choose Call 1", 5, 1);
-    } else {
-        disp_write(" " + calls[0].status, 5, 1);
-    }
-    if (calls[1].isEmpty()) {
-        disp_write(" Choose Call 2", 5, 2);
-    } else {
-        disp_write(" " + calls[1].status, 5, 2);
-    }
-    if (calls[2].isEmpty()) {
-        disp_write(" Choose Call 3", 5, 3);
-    } else {
-        disp_write(" " + calls[2].status, 5, 3);
-    }
-    disp_write(" Back", 5, 4);
-
-    switch (menu_item % 4) {
-        case 1:
-            disp_write(">",5,1);
-        case 2:
-            disp_write(">",5,2);
-        case 3:
-            disp_write(">",5,3);
-        case 0:
-            disp_write(">",5,4);
-    }
-}
-
-void setCalls() {
-    int menu_item = 1;
-    int button = 0;
-
-    while (true) {
-        showSetCalls(menu_item);
-        vTaskDelay(pdMS_TO_TICKS(refresh_rate));
-        button = checkButtonPress();
-
-        if (button==1) {
-            menu_item = (menu_item <= 0) ? 4 : menu_item-1;
-            disp_cls();
-
-        } else if (button==3) {           // Decrement
-            menu_item = (menu_item >= 3) ? 0 : menu_item+1;
-            disp_cls();
-
-        } else if (button==2) {
-            if (menu_item==1) {
-                disp_cls();
-                chooseCalls(0);
-            } else if (menu_item==2) {
-                disp_cls();
-                chooseCalls(1);
-            } else if (menu_item==3) {
-                disp_cls();
-                chooseCalls(2);
-            } else {
-                break;
-            }
-        }
-    }
-}
+void showConnectWiFi(int menu_item, const char *ccc, const char *ddd) {
+    
+    disp_write("Set the IP of Back-end", 5, 2,false );
+    if (menu_item == 1) {
+        disp_write("192:168:>" + ccc + ":" + ddd, 5, 2,false);
+    } else if (menu_item == 2) {
+        disp_write("192:168:" + ccc + ":>" + ddd, 5, 2, false);
+    } 
+    
+}*/
 
 void showChooseCalls(int menu_item) {
     int button = 0;
-    if (int callRecordCount == 0) {
-        disp_write(" No calls set", 5, 1);
-        disp_write(" Please set on mgmt console", 5, 2);
-        disp_write(">Go back", 5, 3);
+    if (callRecordCount == 0) {
+        disp_write("No calls set", 5, 1, false);
+        disp_write("Please set on mgmt console", 5, 2, false);
+        disp_write("Go back", 5, 3, true);
 
     } else {
         if (menu_item+3 <= callRecordCount-1) {
-            disp_write(" " + callRecords[menu_item].status, 5, 1);
-            disp_write(" " + callRecords[menu_item+1].status, 5, 2);
-            disp_write(" " + callRecords[menu_item+2].status, 5, 3);
-            disp_write(" " + callRecords[menu_item+3].status, 5, 4);
+            if (menu_item%4 == 1) {
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, false);
+                disp_write(callRecords[menu_item+3].status, 5, 4, false);
+                disp_write(callRecords[menu_item].status, 5, 1, true);
+            } else if (menu_item%4 == 2) {                
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, false);
+                disp_write(callRecords[menu_item+3].status, 5, 4, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, true);
+            } else if (menu_item%4 == 3) {
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item+3].status, 5, 4, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, true);
+            } else {
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, false);
+                disp_write(callRecords[menu_item+3].status, 5, 4, true);
+            }
     
         } else if (menu_item+2 <= callRecordCount-1) {
-            disp_write(" " + callRecords[menu_item].status, 5, 1);
-            disp_write(" " + callRecords[menu_item+1].status, 5, 2);
-            disp_write(" " + callRecords[menu_item+2].status, 5, 3);
+            if (menu_item%3 == 1) {
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, false);
+                disp_write(callRecords[menu_item].status, 5, 1, true);
+            } else if (menu_item%3 == 2) {                
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, true);
+            } else {
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item+2].status, 5, 3, true);
+            }
     
         } else if (menu_item+1 <= callRecordCount-1) {
-            disp_write(" " + callRecords[menu_item].status, 5, 1);
-            disp_write(" " + callRecords[menu_item+1].status, 5, 2);
+            if (menu_item%2 == 1) {
+                disp_write(callRecords[menu_item+1].status, 5, 2, false);
+                disp_write(callRecords[menu_item].status, 5, 1, true);
+            } else {                
+                disp_write(callRecords[menu_item].status, 5, 1, false);
+                disp_write(callRecords[menu_item+1].status, 5, 2, true);
+            }
     
         } else {
-            disp_write(" " + callRecords[menu_item].status, 5, 1);
-        }
-
-        switch (menu_item % 4) {
-            case 1:
-                disp_write(">",5,1);
-            case 2:
-                disp_write(">",5,2);
-            case 3:
-                disp_write(">",5,3);
-            case 0:
-                disp_write(">",5,4);
+            disp_write(callRecords[menu_item].status, 5, 2, true);
         }
     }
 }
 
 void chooseCalls(int callIndex) {
-    fetchCallRecords();
+    //fetchCallRecords();
 
     int menu_item = 1;
     int button = 0;
+    showChooseCalls(menu_item);
 
     while (true) {
-        showChooseCalls(menu_item);
-        vTaskDelay(pdMS_TO_TICKS(refresh_rate));
         button = checkButtonPress();
 
         if (button==1) {
             menu_item = (menu_item <= 0) ? 1 : menu_item-1;
+            vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
+            showChooseCalls(menu_item);
 
         } else if (button==3) {           // Decrement
-            menu_item = (menu_item >= callRecordCount) ? callRecordCount : 
-            menu_item+1;
+            menu_item = (menu_item >= callRecordCount) ? callRecordCount : menu_item+1;
+            vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
+            showChooseCalls(menu_item);
 
         } else if (button==2) {
-            calls[callIndex] = callRecords[menu_item-1];
-            break();
+            setCallrecord(&calls[callIndex], callRecords[menu_item-1].status, callRecords[menu_item-1].mancalldesc, callRecords[menu_item-1].mancallto);
+            break;
         }
     }
 }
 
+void showSetCalls(int menu_item) {
+    char *call1MenuText = (calls[0].status) ? calls[0].status : "Choose Call 1";
+    char *call2MenuText = (calls[1].status) ? calls[1].status : "Choose Call 2";
+    char *call3MenuText = (calls[2].status) ? calls[2].status : "Choose Call 3";
+
+    if (menu_item==1) {
+        disp_write(call2MenuText, 5, 2, false);
+        disp_write(call3MenuText, 5, 3, false);
+        disp_write("Back", 5, 4, false);
+
+        disp_write(call1MenuText, 5, 1, true);
+    
+    } else if (menu_item==2) {
+        disp_write(call1MenuText, 5, 1, false);
+        disp_write(call3MenuText, 5, 3, false);
+        disp_write("Back", 5, 4, false);
+        
+        disp_write(call2MenuText, 5, 2, true);
+
+    } else if (menu_item==3) {
+        disp_write(call1MenuText, 5, 1, false);
+        disp_write(call2MenuText, 5, 2, false);
+        disp_write("Back", 5, 4, false);
+        
+        disp_write(call3MenuText, 5, 3, true);
+
+    } else {
+        disp_write(call1MenuText, 5, 1, false);
+        disp_write(call2MenuText, 5, 2, false);
+        disp_write(call3MenuText, 5, 3, false);
+
+        disp_write("Back", 5, 4, true);
+    }    
+}
+
+
+void setCalls() {
+    int menu_item = 1;
+    int button = 0;
+    showSetCalls(menu_item);
+
+    while (true) {
+        button = checkButtonPress();
+
+        if (button==1) {
+            menu_item = (menu_item==1) ? 4 : menu_item-1;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            disp_cls();
+            showSetCalls(menu_item);
+
+        } else if (button==3) {           // Decrement
+            menu_item = (menu_item==4) ? 0 : menu_item+1;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            disp_cls();
+            showSetCalls(menu_item);
+
+        } else if (button==2) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            if (menu_item==1) {
+                disp_cls();
+                chooseCalls(0);
+                showSetCalls(menu_item);
+            } else if (menu_item==2) {
+                disp_cls();
+                chooseCalls(1);
+                showSetCalls(menu_item);
+            } else if (menu_item==3) {
+                disp_cls();
+                chooseCalls(2);
+                showSetCalls(menu_item);
+            } else {
+                disp_cls();
+                break;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG_DISP, "Exiting SetCalls()");
+}
+
+/*
 void showSetDepartment(int menu_item) {
     int button = 0;
     if (int deptRecordCount == 0) {
@@ -963,114 +823,151 @@ void setDepartment() {
         }
     }
 }
+*/
 
+void showSettings(int menu_item) {
+    if (menu_item==1) {
+        disp_write("Choose Calls", 5, 2, false);
+        disp_write("Set Department", 5, 3, false);
+        disp_write("Exit", 5, 4, false);
 
+        disp_write("Connect to WiFi", 5, 1, true);
 
+    } else if (menu_item==2) {
+        disp_write("Connect to WiFi", 5, 1, false);
+        disp_write("Set Department", 5, 3, false);
+        disp_write("Exit", 5, 4, false);
 
+        disp_write("Choose Calls", 5, 2, true);
 
-// --------------------------------------------------------
-// -------------- Functions for main ----------------------
-// -------------------------------------------------------- 
+    } else if (menu_item==3) {
+        disp_write("Connect to WiFi", 5, 1, false);
+        disp_write("Choose Calls", 5, 2, false);
+        disp_write("Exit", 5, 4, false);
 
-void app_main() {
-    // Get console ID
-    const char *console_id = getenv("CONSOLE_ID");
-    if (console_id == NULL) {
-        console_id = "0102401";  // Default console ID
-        ESP_LOGW(TAG_CODE, 
-            "CONSOLE_ID environment variable not set. Using default: %s", 
-            console_id);
+        disp_write("Set Department", 5, 3, true);
+
+    } else {
+        disp_write("Connect to WiFi", 5, 1, false);
+        disp_write("Choose Calls", 5, 2, false);
+        disp_write("Set Department", 5, 3, false);
+
+        disp_write("Exit", 5, 4, true);
+
+    }            
+}
+
+void settings() {
+    int menu_item = 1;
+    int button = 0;
+    showSettings(menu_item);           // Increment
+
+    while (true) {        
+        button = checkButtonPress();
+
+        if (button==1) {
+            menu_item = (menu_item==1) ? 4 : menu_item-1;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            disp_cls();
+            showSettings(menu_item);           // Increment
+
+        } else if (button==3) {           // Decrement
+            menu_item = (menu_item==4) ? 1 : menu_item+1;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            disp_cls();
+            showSettings(menu_item);           // Increment
+
+        } else if (button==2) {           // Select
+            vTaskDelay(pdMS_TO_TICKS(500));
+            if (menu_item==1) {
+                //disp_cls();
+                //connectWiFi();
+            } else if (menu_item==2) {
+                disp_cls();
+                setCalls();
+                showSettings(menu_item);
+            } else if (menu_item==3) {
+                //disp_cls();
+                //setDepartment();
+            } else {
+                disp_cls();
+                break;
+            }
+        }
     }
+
+    ESP_LOGI(TAG_DISP, "Exiting settings()");
+}
+
+void showMainMenu(){      // Main Menu
+    spacing = default_spacing;
+
+    bool statset = (calls[0].status!=NULL && !calls[1].status!=NULL && calls[2].status!=NULL); 
+
+    if (!statset) {         // If no statuses set 
+        disp_write("Do the initial Setup..", 5, 1,false);
+        disp_write("Settings (Press OK)", 5, 2, true);
+
+    } else {                // If statuses set
+        disp_write(calls[0].status, 5, 1,false);
+        disp_write(calls[1].status, 5, 2,false);
+        disp_write(calls[2].status, 5, true,false);
+        disp_write("Settings", 5, 4,true);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (checkButtonPress()==2) {
+        disp_cls();
+        settings();           // Goto the settings menu
+    }
+}
+
+void app_main(void)
+{
+    gpio_setup();
+    ESP_LOGI(TAG_CODE, "GPIO configured");
 
     // Display setup
-    *gpio_out_w1ts_reg = (1 << BKLT);   // Switch on backlight
-    esp_err_t ret1;
-
-    tft_disp_type = DEFAULT_DISP_TYPE;
-    _width  = DEFAULT_TFT_DISPLAY_WIDTH;
-    _height = DEFAULT_TFT_DISPLAY_HEIGHT;
-    max_rdclock = 8000000;
-
-    TFT_PinsInit();
-
-    // Configuring SPI
-    spi_lobo_device_handle_t spi;
-
-    spi_lobo_bus_config_t buscfg = {
-        .miso_io_num = -1,  // No MISO line
-        .mosi_io_num = MOSI,
-        .sclk_io_num = SCLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-
-        .max_transfer_sz = 6*1024,
-    };
-
-    spi_lobo_device_interface_config_t devcfg = {
-        .clock_speed_hz = 8000000,
-        .mode = 0,
-        .spics_io_num = -1,
-        .spics_ext_io_num = CS,
-        .flags = LB_SPI_DEVICE_HALFDUPLEX,
-    };
-
-    ret1 = spi_lobo_bus_add_device(SPI_BUS, &buscfg, &devcfg, &spi);
-    assert(ret1 == ESP_OK);
-    disp_spi = spi;
-
-    ESP_LOGI(TAG_DISP, "SPI: display init...");
-    TFT_display_init();
-    ESP_LOGI(TAG_DISP, "OK");
+    *gpio_out_w1ts_reg |= (1 << BKLT);   // Switch on backlight
+    _init_TFT();
+    //disp_start();
+    ESP_LOGI(TAG_DISP, "Display Initiated");
+    *gpio_out_w1tc_reg |= (1 << BKLT);
+    vTaskDelay(pdMS_TO_TICKS(500));
     
-    spi_lobo_set_speed(spi, DEFAULT_SPI_CLK);
-    ESP_LOGI(TAG_DISP,"SPI: Changed speed to %u", spi_lobo_get_speed(spi));
+    // Wifi initialization
+    wifi_init();
+    ESP_LOGI(TAG_WIFI, "Wifi initialization done");
 
-    disp_start();
+    // Initializing Websockets
+    // websocket_init();
 
-    //Initialise NVS
-    esp_err_t ret2 = nvs_flash_init();
-    if (ret2 == ESP_ERR_NVS_NO_FREE_PAGES || ret2 == 
-        ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            ESP_ERROR_CHECK(nvs_flash_erase());
-            ret2 = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret2);
-    start_wps();
+    while(true) {
+        // Send websockets
+        // websocket_task();
 
-    client = websocket_client_init();
+        int button = checkButtonPress();
+        int displayontime = 0;
 
-    // GPIO setup
-    gpioSetup();
-
-    // Fetch Department and Call info
-    fetchDeptRecords();
-    fetchCallRecords();
-
-    int displaytime;
-
-    while (true) {
-        displaytime = 0;
-        int button = 0;
-        button = checkButtonPress();
-        
         if (button == 2) {
-            button = 0;
-            button = checkButtonPress();
+            *gpio_out_w1ts_reg |= (1 << BKLT);
+            disp_cls();
+            while(displayontime < 10) {
+                button = 0;
+                button = checkButtonPress();
 
-            while (displaytime < 10) {
-                // Displays the main menu
                 showMainMenu();
-                vTaskDelay(pdMS_TO_TICKS(500));
-                displaytime++;
-
+                vTaskDelay(pdMS_TO_TICKS(10));
+                displayontime++;
+                
                 if (button == 2) {
-                    // Check for navigation
-                    settings();
+                    // settings();
                 }
             }
-        } 
+            
+        }
 
-        // Checks for calls
-        callPress();
+        *gpio_out_w1tc_reg |= (1 << BKLT);
     }
 }
