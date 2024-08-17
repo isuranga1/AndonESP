@@ -960,10 +960,6 @@ void app_main(void)
                 showMainMenu();
                 vTaskDelay(pdMS_TO_TICKS(10));
                 displayontime++;
-                
-                if (button == 2) {
-                    // settings();
-                }
             }
             
         }
