@@ -111,8 +111,8 @@ int default_spacing = 2;
 int refresh_rate    = 500;
 int highlight_padding = 3;
 
-#define MAX_CALL_RECORDS 50; // Adjust as needed
-#define MAX_DEPT_RECORDS 50; // Adjust as needed
+#define MAX_CALL_RECORDS 50 // Adjust as needed
+#define MAX_DEPT_RECORDS 50 // Adjust as needed
 
 struct Callrecord {
     char *status;
@@ -124,12 +124,6 @@ struct Deptrecord {
     char *deptname;
     int deptid;
 };
-
-struct Callrecord callRecords[MAX_CALL_RECORDS];
-int callRecordCount = 0;
-
-struct Deptrecord deptRecords[MAX_DEPT_RECORDS];
-int deptRecordCount = 0;
 
 char *department_id = NULL;
 struct Deptrecord department;
@@ -164,6 +158,22 @@ void setDeptrecord(struct Deptrecord *record, const char *dept, int id) {
         strcpy(record->deptname, dept);
     }
     record->deptid = id;
+}
+
+//change these
+struct Callrecord callRecords[MAX_CALL_RECORDS];
+int callRecordCount = 0;
+
+struct Deptrecord deptRecords[MAX_DEPT_RECORDS];
+int deptRecordCount = 0;
+
+void initialiseCallRecord() {
+    for (int i = 0; i < MAX_CALL_RECORDS; i++) {
+        callRecords[i].status = NULL;
+        callRecords[i].mancalldesc = NULL;
+        callRecords[i].mancallto = NULL;
+    }
+    callRecordCount = 0;  // Initialize count
 }
 
 // --------------------------------------------------------
@@ -939,6 +949,9 @@ void app_main(void)
     // Wifi initialization
     wifi_init();
     ESP_LOGI(TAG_WIFI, "Wifi initialization done");
+
+    // Initializing Callrecords
+    initialiseCallRecord();
 
     // Initializing Websockets
     // websocket_init();
