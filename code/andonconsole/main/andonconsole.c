@@ -4,22 +4,30 @@ Project: Wireless Reconfigurable Andon System with Maintenance Prediction
   * For the module EN2160: Electronic Design Realisation at University of 
     Moratuwa, Sri Lanka
 
+
 Parts of the code taken from following repositories:
+
 - Boris Lovosevic: TFT Display Code
   Copyright (c) 2017 Boris Lovosevic
+
 - Jeremy Huffman: TFT Display Code - CMake suppport
   Copyright (c) 2021 Jeremy Huffman
+
 - Luis D. Gomez: TFT Controller Intergration
   Copyright (c) 2020 Luis Diego Gomez
+
 - Espressif Systems (Shanghai): WPS connection, Websockets, HTTP GET
   Copyright (c) 2021 Espressif Systems (Shanghai)
+
 - Fateh Ali: WiFi Event Handler
   Copyright (c) 2023 Fateh Ali Sharukh Khan
+
 - Josh Marangoni: Baremetal ESP32 GPIO
   Copyright (c) 2023 Josh Marangoni
 
 Main code and modifications by Isuranga Senavirathne and Yasith Silva
 Copyright (c) 2024 Isuranga Senavirathne, Yasith Silva
+
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to 
@@ -125,8 +133,7 @@ struct Deptrecord {
     int deptid;
 };
 
-char *department_id = NULL;
-struct Deptrecord department;
+struct Deptrecord department = {NULL, NULL};
 struct Callrecord calls[3] = {
     {NULL,NULL,NULL},
     {NULL,NULL,NULL},
@@ -256,10 +263,10 @@ static void websocket_task(void *pvParameters) {
         cJSON *doc2 = cJSON_CreateObject();
 
         cJSON_AddNumberToObject(doc1, "consoleid", 500);
-        cJSON_AddNumberToObject(doc1, "department", 14);
-        cJSON_AddStringToObject(doc1, "call1", call1 ? "Red" : "");
-        cJSON_AddStringToObject(doc1, "call2", call2 ? "Green" : "");
-        cJSON_AddStringToObject(doc1, "call3", call3 ? "White" : "");
+        cJSON_AddNumberToObject(doc1, "department", department.deptid ? department.deptid : -1);
+        cJSON_AddStringToObject(doc1, "call1", call1 ? (calls[0].status ? calls[0].status : "Undefined") : "");
+        cJSON_AddStringToObject(doc1, "call2", call2 ? (calls[1].status ? calls[1].status : "Undefined") : "");
+        cJSON_AddStringToObject(doc1, "call3", call3 ? (calls[2].status ? calls[2].status : "Undefined") : "");
         cJSON_AddStringToObject(doc1, "oldcall", "");
 
         cJSON_AddStringToObject(doc2, "stat1", call1 ? "70" : "4550");
@@ -765,75 +772,98 @@ void setCalls() {
     ESP_LOGI(TAG_DISP, "Exiting SetCalls()");
 }
 
-/*
+
 void showSetDepartment(int menu_item) {
     int button = 0;
-    if (int deptRecordCount == 0) {
-        disp_write(" No departments set", 5, 1);
-        disp_write(" Please set on mgmt console", 5, 2);
-        disp_write(">Go back", 5, 3);
+    if (deptRecordCount == 0) {
+        disp_write("No departments set", 5, 1, false);
+        disp_write("Please set on mgmt console", 5, 2, false);
+        disp_write("Go back", 5, 3, true);
 
     } else {
         if (menu_item+3 <= deptRecordCount-1) {
-            disp_write(" " + deptRecords[menu_item].deptname, 5, 1);
-            disp_write(" " + deptRecords[menu_item+1].deptname, 5, 2);
-            disp_write(" " + deptRecords[menu_item+2].deptname, 5, 3);
-            disp_write(" " + deptRecords[menu_item+3].deptname, 5, 4);
-    
+            if (menu_item%4 == 1) {
+                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
+            } else if (menu_item%4 == 2) {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
+            } else if (menu_item%4 == 3) {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 1, true);
+            } else {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item+3].deptname, 5, 1, true);
+            }
+            
         } else if (menu_item+2 <= deptRecordCount-1) {
-            disp_write(" " + deptRecords[menu_item].deptname, 5, 1);
-            disp_write(" " + deptRecords[menu_item+1].deptname, 5, 2);
-            disp_write(" " + deptRecords[menu_item+2].deptname, 5, 3);
+            if (menu_item%4 == 1) {
+                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
+            } else if (menu_item%4 == 2) {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
+            } else {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+2].deptname, 5, 1, true);
+            }
     
         } else if (menu_item+1 <= deptRecordCount-1) {
-            disp_write(" " + deptRecords[menu_item].deptname, 5, 1);
-            disp_write(" " + deptRecords[menu_item+1].deptname, 5, 2);
-    
+            if (menu_item%4 == 1) {
+                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
+            } else if (menu_item%4 == 2) {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
+            }
+            
         } else {
-            disp_write(" " + deptRecords[menu_item].deptname, 5, 1);
-        }
-
-        switch (menu_item % 4) {
-            case 1:
-                disp_write(">",5,1);
-            case 2:
-                disp_write(">",5,2);
-            case 3:
-                disp_write(">",5,3);
-            case 0:
-                disp_write(">",5,4);
+            disp_write(deptRecords[menu_item].deptname, 5, 1, true);
         }
     }
 }
 
 // Check numbering again
 void setDepartment() {
-    fetchDeptRecords();
+    //fetchDeptRecords();
 
     int menu_item = 1;
     int button = 0;
+    showSetDepartment(menu_item);
 
     while (true) {
-        showSetDepartment(menu_item);
-        vTaskDelay(pdMS_TO_TICKS(refresh_rate));
         button = checkButtonPress();
 
         if (button==1) {
             menu_item = (menu_item <= 0) ? 1 : menu_item-1;
+            vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
+            showSetDepartment(menu_item);
 
         } else if (button==3) {           // Decrement
-            menu_item = (menu_item >= deptRecordCount) ? deptRecordCount : 
-            menu_item+1;
+            menu_item = (menu_item >= deptRecordCount) ? deptRecordCount : menu_item+1;
+            vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
+            showChooseCalls(menu_item);
 
         } else if (button==2) {
-            department = deptRecords[menu_item-1];
-            break();
+            setDeptrecord(&department, deptRecords[menu_item-1].deptname, deptRecords[menu_item-1].deptid);
+            break;
         }
     }
 }
-*/
+
 
 void showSettings(int menu_item) {
     if (menu_item==1) {
