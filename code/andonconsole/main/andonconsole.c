@@ -60,7 +60,7 @@ DEALINGS IN THE SOFTWARE. */
 #include "esp_err.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
-// #include "esp_http_client.h"
+//#include "esp_http_client.h"
 //#include "esp_netif.h"
 #include "esp_websocket_client.h"
 #include "tft.h"
@@ -123,7 +123,7 @@ void gpio_setup() {
     gpio_config(&io_conf);
 
     // Inputs left 0, outputs set to 1
-    *gpio_enable_reg   |= (1<<IND1) | (1<<IND2) | (1<<IND3) | (1<<BKLT) | (1<<DEBUG);
+    *gpio_enable_reg   |= (1 << IND1) | (1 << IND2) | (1 << IND3) | (1 << BKLT) | (1 << DEBUG);
     *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3) | (1<<DEBUG); // Initialises to 0
 }
 
@@ -160,6 +160,12 @@ struct Callrecord calls[3] = {
 
 // Set Callrecord
 void setCallrecord(struct Callrecord *record, const char *status, const char *desc, const char *to) {
+    if (status == NULL || desc == NULL || to == NULL) {
+        ESP_LOGE(TAG_CODE, "One or more input strings are NULL.");
+        return;
+    }
+
+    // Free previous memory if allocated
     if (record->status != NULL) free(record->status);
     if (record->mancalldesc != NULL) free(record->mancalldesc);
     if (record->mancallto != NULL) free(record->mancallto);
@@ -169,10 +175,17 @@ void setCallrecord(struct Callrecord *record, const char *status, const char *de
     record->mancalldesc = malloc(strlen(desc) + 1);
     record->mancallto = malloc(strlen(to) + 1);
 
+    // Check if memory allocation was successful
     if (record->status != NULL) strcpy(record->status, status);
+    else ESP_LOGE(TAG_CODE, "Failed to allocate memory for status");
+
     if (record->mancalldesc != NULL) strcpy(record->mancalldesc, desc);
+    else ESP_LOGE(TAG_CODE, "Failed to allocate memory for mancalldesc");
+
     if (record->mancallto != NULL) strcpy(record->mancallto, to);
+    else ESP_LOGE(TAG_CODE, "Failed to allocate memory for mancallto");
 }
+
 
 // Set Deptrecord
 void setDeptrecord(struct Deptrecord *record, const char *dept, int id) {
@@ -247,7 +260,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         esp_wifi_connect();
-        ESP_LOGI(TAG_WIFI, "retry to connect to the AP");
+        ESP_LOGE(TAG_WIFI, "retry to connect to the AP");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG_WIFI, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
@@ -325,14 +338,14 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             ESP_LOGI(TAG_SOCK, "WebSocket Connected");
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG_SOCK, "WebSocket Disconnected");
+            ESP_LOGE(TAG_SOCK, "WebSocket Disconnected");
             break;
         case WEBSOCKET_EVENT_DATA:
             ESP_LOGI(TAG_SOCK, "Received data length: %d", data->data_len);
             ESP_LOGI(TAG_SOCK, "Received data: %.*s", data->data_len, (char*)data->data_ptr);
             break;
         case WEBSOCKET_EVENT_ERROR:
-            ESP_LOGI(TAG_SOCK, "WebSocket Error");
+            ESP_LOGE(TAG_SOCK, "WebSocket Error");
             break;
     }
 }
@@ -367,22 +380,22 @@ void send_data_task(esp_websocket_client_handle_t client)
         cJSON_Delete(json);
 
         if (call1) {
-            *gpio_out_w1ts_reg |= (1<<IND1);
+            *gpio_out_w1ts_reg |= (1 << IND1);
             ESP_LOGI(TAG_CODE, "Call1");
         } 
 
         if (call2) {
-            *gpio_out_w1ts_reg |= (1<<IND2);
+            *gpio_out_w1ts_reg |= (1 << IND2);
             ESP_LOGI(TAG_CODE, "Call2");
         }
 
         if (call3) {
-            *gpio_out_w1ts_reg |= (1<<IND3);
+            *gpio_out_w1ts_reg |= (1 << IND3);
             ESP_LOGI(TAG_CODE, "Call3");
         }
 
         if (!call1 & !call2 & !call3) {
-            *gpio_out_w1tc_reg |= (1<<IND1) | (1<<IND2) | (1<<IND3);
+            *gpio_out_w1tc_reg |= (1 << IND1) | (1 << IND2) | (1 << IND3);
         }
     } else {
         ESP_LOGW(TAG_SOCK, "WebSocket client is not connected");
@@ -707,6 +720,7 @@ void chooseCalls(int callIndex) {
     showChooseCalls(menu_item);
 
     while (true) {
+        vTaskDelay(pdMS_TO_TICKS(500));
         button = checkButtonPress();
 
         if (button==1) {
@@ -722,8 +736,12 @@ void chooseCalls(int callIndex) {
             showChooseCalls(menu_item);
 
         } else if (button==2) {
-            setCallrecord(&calls[callIndex], callRecords[menu_item-1].status, callRecords[menu_item-1].mancalldesc, callRecords[menu_item-1].mancallto);
+            if (callRecordCount!=0) {
+                setCallrecord(&calls[callIndex], callRecords[menu_item-1].status, callRecords[menu_item-1].mancalldesc, callRecords[menu_item-1].mancallto);
+            }
+            ESP_LOGI(TAG_CODE, "Call chosen");
             disp_cls();
+            vTaskDelay(pdMS_TO_TICKS(500));
             break;
         }
     }
@@ -808,6 +826,7 @@ void setCalls() {
 
             } else {
                 disp_cls();
+                vTaskDelay(pdMS_TO_TICKS(500));
                 break;
             }
         }
@@ -901,7 +920,10 @@ void setDepartment() {
             showSetDepartment(menu_item);
 
         } else if (button==2) {
-            setDeptrecord(&department, deptRecords[menu_item-1].deptname, deptRecords[menu_item-1].deptid);
+            if (deptRecordCount!=0) {
+                setDeptrecord(&department, deptRecords[menu_item-1].deptname, deptRecords[menu_item-1].deptid);
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
             break;
         }
     }
@@ -964,10 +986,12 @@ void settings() {
         } else if (button==2) {           // Select
             vTaskDelay(pdMS_TO_TICKS(500));
             if (menu_item==1) {
+                
+            } else if (menu_item==2) {
                 disp_cls();
                 setCalls();
                 showSettings(menu_item);
-            } else if (menu_item==2) {
+            } else if (menu_item==3) {
                 disp_cls();
                 setDepartment();
                 showSettings(menu_item);
@@ -986,19 +1010,26 @@ void showMainMenu(){      // Main Menu
     spacing = default_spacing; 
     char display_text[50];
 
-    if (calls[0].status==NULL && calls[1].status==NULL && calls[2].status==NULL) {         // If no statuses set 
+    if (calls[0].status==NULL || calls[1].status==NULL || calls[2].status==NULL) {         // If no statuses set 
         disp_write("Do the initial Setup..", 5, 1,false);
         disp_write("Settings (Press OK)", 5, 2, true);
 
     } else {                // If statuses set
-        sprintf(display_text, sizeof(display_text), "Call 1: %s", calls[0].mancalldesc);
-        disp_write(calls[0].status, 5, 1, false);
+        // If statuses are set
+        if (calls[0].mancalldesc != NULL) {
+            snprintf(display_text, sizeof(display_text), "Call 1: %.41s", calls[0].mancalldesc);
+            disp_write(display_text, 5, 1, false);
+        }
 
-        sprintf(display_text, sizeof(display_text), "Call 2: %s", calls[1].mancalldesc);
-        disp_write(calls[1].status, 5, 2, false);
+        if (calls[1].mancalldesc != NULL) {
+            snprintf(display_text, sizeof(display_text), "Call 2: %.41s", calls[1].mancalldesc);
+            disp_write(display_text, 5, 2, false);
+        }
 
-        sprintf(display_text, sizeof(display_text), "Call 3: %s", calls[2].mancalldesc);
-        disp_write(calls[2].status, 5, 3, false);
+        if (calls[2].mancalldesc != NULL) {
+            snprintf(display_text, sizeof(display_text), "Call 3: %.41s", calls[2].mancalldesc);
+            disp_write(display_text, 5, 3, false);
+        }
 
         disp_write("Settings", 5, 4,true);
     }
@@ -1008,6 +1039,7 @@ void showMainMenu(){      // Main Menu
     if (checkButtonPress()==2) {
         disp_cls();
         settings();           // Goto the settings menu
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -1029,6 +1061,7 @@ void app_main(void) {
     *gpio_out_w1tc_reg |= (1 << BKLT);
     vTaskDelay(pdMS_TO_TICKS(500));
 
+
     // Initialize NVS (Non-Volatile Storage) to store Wi-Fi credentials
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1038,16 +1071,16 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
     ESP_LOGI(TAG_CODE, "Non volatile memory initialized");
     
-    // Wifi initialization
+/*  // Wifi initialization
     wifi_init_sta();
     // Wait for Wi-Fi connection
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
-    ESP_LOGI(TAG_WIFI, "Wifi initialized");
+    ESP_LOGI(TAG_WIFI, "Wifi initialized");*/
 
     // Initializing Callrecords
     initialiseCallRecord();
     testCallRecords();
-
+/*
     // Initializing Websockets
     // char* WEBSOCKET_URI = resolve_mdns_host();
     websocket_app_start();
@@ -1060,11 +1093,11 @@ void app_main(void) {
     // Register the WebSocket event handler
     esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, websocket_event_handler, (void *)client);
     esp_websocket_client_start(client);
-    ESP_LOGI(TAG_SOCK, "Socket connection initialised");
+    ESP_LOGI(TAG_SOCK, "Socket connection initialised");*/
 
     while(true) {
         // Send data
-        send_data_task(client);
+        //send_data_task(client);
 
         int button = checkButtonPress();
         int displayontime = 0;
@@ -1079,10 +1112,10 @@ void app_main(void) {
                 showMainMenu();
                 vTaskDelay(pdMS_TO_TICKS(10));
                 displayontime++;
-            }
-            
+            }  
         }
 
+        // Turn off the display
         *gpio_out_w1tc_reg |= (1 << BKLT);
         
         vTaskDelay(pdMS_TO_TICKS(1000));       
