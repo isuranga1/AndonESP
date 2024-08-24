@@ -133,7 +133,6 @@ void gpio_setup() {
 // -----------------------------------------------------------
 //    Setting up calls and departments
 // ----------------------------------------------------------- 
-#define MACHINE_ID 500
 
 // console ID to be defined in building
 static const char *TAG_CODE = "Code";
@@ -518,9 +517,38 @@ static const char *TAG_SOCK = "WebSocket";
 // Set either credentials if you're demonstrating with a mobile hotspot,
 // or comment all that and uncomment the functions where it's set in WPS
 
+#define websocket_uri   "ws://192.168.79.53:8080"
 #define WIFI_SSID       "Isuranga's Galaxy A72"
 #define WIFI_PASS       "xbai9431"
-#define websocket_uri   "ws://192.168.79.53:8080"
+
+// Connect Websocket server
+/*
+static char* resolve_mdns_host() {
+    ESP_LOGI(TAG_SOCK, "Query websocket server");
+
+    struct ip4_addr addr;
+    addr.addr=0;
+
+    esp_err_t err = mdns_query_a("AndonESP-Backend", 2000, &addr);
+    if (err) {
+        if (err == ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG_SOCK, "Server not found");
+        } else {
+            ESP_LOGW(TAG_SOCK, "mDNS Query failed");
+        }
+        return NULL;
+    }
+    ESP_LOGI(TAG_SOCK, "Query A: %s.local resolved to: " IPSTR, "AndonESP-Backend", IP2STR(&addr));
+    
+    char *websocket_uri = malloc(50);
+    if (websocket_uri == NULL) {
+        ESP_LOGE(TAG_CODE, "Failed to allocate memory to IP");
+        return NULL;
+    }
+
+    snprintf(websocket_uri, 50, "wss://" IPSTR ":443/", IP2STR(&addr));
+    return websocket_uri;
+}*/
 
 static EventGroupHandle_t wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
@@ -571,35 +599,6 @@ void wifi_init_sta(void)
     ESP_LOGI(TAG_WIFI, "wifi_init_sta finished.");
 }
 
-// Connect Websocket server
-/*
-static char* resolve_mdns_host() {
-    ESP_LOGI(TAG_SOCK, "Query websocket server");
-
-    struct ip4_addr addr;
-    addr.addr=0;
-
-    esp_err_t err = mdns_query_a("AndonESP-Backend", 2000, &addr);
-    if (err) {
-        if (err == ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG_SOCK, "Server not found");
-        } else {
-            ESP_LOGW(TAG_SOCK, "mDNS Query failed");
-        }
-        return NULL;
-    }
-    ESP_LOGI(TAG_SOCK, "Query A: %s.local resolved to: " IPSTR, "AndonESP-Backend", IP2STR(&addr));
-    
-    char *websocket_uri = malloc(50);
-    if (websocket_uri == NULL) {
-        ESP_LOGE(TAG_CODE, "Failed to allocate memory to IP");
-        return NULL;
-    }
-
-    snprintf(websocket_uri, 50, "wss://" IPSTR ":443/", IP2STR(&addr));
-    return websocket_uri;
-}*/
-
 // WebSocket event handler
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -633,7 +632,7 @@ void send_data_task(esp_websocket_client_handle_t client)
 
         // Create a JSON object
         cJSON *json = cJSON_CreateObject();
-        cJSON_AddNumberToObject(json, "consoleid", MACHINE_ID); // Define ConsoleID
+        cJSON_AddNumberToObject(json, "consoleid", CONSOLE_ID); // Define ConsoleID
         cJSON_AddStringToObject(json, "department", department.deptid ? department.deptid : "Undefined");
         cJSON_AddStringToObject(json, "call1", call1 ? (calls[0].status ? calls[0].status : "Undefined") : "");
         cJSON_AddStringToObject(json, "call2", call2 ? (calls[1].status ? calls[1].status : "Undefined") : "");
@@ -1354,12 +1353,15 @@ void app_main(void) {
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
     ESP_LOGI(TAG_WIFI, "Wifi initialized");*/
 
-    // ---------- FOR TESTING ------------
     // Initializing Callrecords 
     initialiseCallRecord();
-    testCallRecords();
     initialiseDeptRecord();
-    testDeptRecords();
+
+    // ---------- FOR TESTING ------------    
+    #if defined(BUILDMETHOD_DEMO)
+        testCallRecords();
+        testDeptRecords();
+    #endif
     // -----------------------------------
 
     // Initialisation of NVS
@@ -1373,8 +1375,8 @@ void app_main(void) {
     // Retreiveing calls from NVS
     nvs_initial_alloc("nvs_calls", " , , , , , , , , ");
     retreiveCalls();
-    //nvs_initial_alloc("nvs_dept", " , ");
-    //retreiveDepts();
+    nvs_initial_alloc("nvs_dept", " , ");
+    retreiveDepts();
 
 /*
     // Initializing Websockets
