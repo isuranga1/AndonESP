@@ -59,6 +59,7 @@ DEALINGS IN THE SOFTWARE. */
 #include "esp_wifi.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 //#include "esp_http_client.h"
 //#include "esp_netif.h"
@@ -132,7 +133,6 @@ void gpio_setup() {
 // -----------------------------------------------------------
 //    Setting up calls and departments
 // ----------------------------------------------------------- 
-#define MACHINE_ID 500
 
 // console ID to be defined in building
 static const char *TAG_CODE = "Code";
@@ -148,7 +148,7 @@ struct Callrecord {
 
 struct Deptrecord {
     char *deptname;
-    int deptid;
+    char *deptid;
 };
 
 struct Deptrecord department = {NULL, NULL};
@@ -188,14 +188,18 @@ void setCallrecord(struct Callrecord *record, const char *status, const char *de
 
 
 // Set Deptrecord
-void setDeptrecord(struct Deptrecord *record, const char *dept, int id) {
+void setDeptrecord(struct Deptrecord *record, const char *dept, const char *id) {
     if (record->deptname != NULL) free (record->deptname);
+    if (record->deptid   != NULL) free (record->deptid);
 
     record->deptname = malloc(strlen(dept) + 1);
+    record->deptid   = malloc(strlen(id) + 1);
     if (record->deptname != NULL) {
         strcpy(record->deptname, dept);
     }
-    record->deptid = id;
+    if (record->deptid != NULL) {
+        strcpy(record->deptid, id);
+    }
 }
 
 struct Callrecord callRecords[MAX_CALL_RECORDS];
@@ -212,6 +216,14 @@ void initialiseCallRecord() {
         callRecords[i].mancallto = NULL;
     }
     callRecordCount = 0;  // Initialize count
+}
+
+void initialiseDeptRecord() {
+    for (int i = 0; i < MAX_CALL_RECORDS; i++) {
+        deptRecords[i].deptname = NULL;
+        deptRecords[i].deptid = NULL;
+    }
+    deptRecordCount = 0;  // Initialize count
 }
 
 // For testing purposes, comment when in operation
@@ -234,6 +246,265 @@ void testCallRecords() {
     callRecordCount = 3;
 }
 
+void testDeptRecords() {
+    deptRecords[0].deptname = "Department 1";
+    deptRecords[0].deptid = "1";
+
+    deptRecords[1].deptname = "Department 2";
+    deptRecords[1].deptid = "2";
+
+    deptRecordCount = 2;
+}
+
+
+
+// --------------------------------------------------------
+//    Saving calls in non volatile memory
+// -------------------------------------------------------- 
+static const char *TAG_NVS = "NVSMem";
+
+void save_string_to_nvs(const char* key, const char* value) {
+    nvs_handle_t writehandle;
+
+    esp_err_t err = nvs_open("NVSMem", NVS_READWRITE, &writehandle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_NVS, "Error (%s) opening NVS handle", esp_err_to_name(err));
+    } else {
+        err = nvs_set_str(writehandle, key, value);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_NVS, "Failed to write");
+        } else {
+            err = nvs_commit(writehandle);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_NVS, "Failed to commit");
+            } else {
+                ESP_LOGI(TAG_NVS, "Commit success");
+            }
+        }
+        nvs_close(writehandle);
+    }
+}
+
+void nvs_initial_alloc(const char* key, const char* value) {
+    nvs_handle_t inithandle;
+    esp_err_t err = nvs_open("NVSMem", NVS_READWRITE, &inithandle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_NVS,"Error (%s) opening NVS handle", esp_err_to_name(err));
+    } else {
+        size_t required_size;
+        err = nvs_get_str(inithandle, key, NULL, &required_size);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            // Key not found, initialise
+            save_string_to_nvs(key, value);
+        } else if (err != ESP_OK) {
+            ESP_LOGE(TAG_NVS, "Failed to get size! Error (%s)", esp_err_to_name(err));
+        }
+        nvs_close(inithandle);
+    }
+}
+
+char* read_string_from_nvs(const char* key) {
+    nvs_handle readhandle;
+    esp_err_t err = nvs_open("NVSMem", NVS_READONLY, &readhandle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_NVS,"Error (%s) opening NVS handle", esp_err_to_name(err));
+        return NULL;
+    }
+    size_t required_size;
+    err = nvs_get_str(readhandle, key, NULL, &required_size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG_NVS,"Key not found in NVS");
+        nvs_close(readhandle);
+        return NULL;
+
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG_NVS,"Failed to get size! Error (%s)", esp_err_to_name(err));
+        nvs_close(readhandle);
+        return NULL;
+    }
+
+    char *value = malloc(required_size);
+    if (value == NULL) {
+        ESP_LOGE(TAG_NVS,"Memory allocation failed");
+        nvs_close(readhandle);
+        return NULL;
+    }
+
+    err = nvs_get_str(readhandle, key, value, &required_size);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_NVS,"Failed to read string! Error (%s)", esp_err_to_name(err));
+        free(value);
+        nvs_close(readhandle);
+        return NULL;
+    }
+
+    nvs_close(readhandle);
+    return value;
+}
+
+void saveCalls() {
+    const char* default_string = " ";
+
+    // Call1
+    size_t len_status0 = (calls[0].status != NULL)      ? strlen(calls[0].status)      : strlen(default_string);
+    size_t len_desc0   = (calls[0].mancalldesc != NULL) ? strlen(calls[0].mancalldesc) : strlen(default_string);
+    size_t len_to0     = (calls[0].mancallto != NULL)   ? strlen(calls[0].mancallto)   : strlen(default_string);
+    // Call2
+    size_t len_status1 = (calls[1].status != NULL)      ? strlen(calls[1].status)      : strlen(default_string);
+    size_t len_desc1   = (calls[1].mancalldesc != NULL) ? strlen(calls[1].mancalldesc) : strlen(default_string);
+    size_t len_to1     = (calls[1].mancallto != NULL)   ? strlen(calls[1].mancallto)   : strlen(default_string);
+    // Call3
+    size_t len_status2 = (calls[2].status != NULL)      ? strlen(calls[2].status)      : strlen(default_string);
+    size_t len_desc2   = (calls[2].mancalldesc != NULL) ? strlen(calls[2].mancalldesc) : strlen(default_string);
+    size_t len_to2     = (calls[2].mancallto != NULL)   ? strlen(calls[2].mancallto)   : strlen(default_string);
+
+    size_t total_len = len_status0 + len_desc0 + len_to0 + len_status1 + len_desc1 + len_to1 + len_status2 + len_desc2 + len_to2 + 9; // 8 commas and 1 null terminator
+    
+    // Allocate memory for the serialized string
+    char *serialized = malloc(total_len);
+    if (serialized == NULL) {
+        ESP_LOGE(TAG_NVS, "Failed to allocate memory for serialized Callrecord.");
+    } else {
+        // Serialize the struct into the allocated string
+        snprintf(serialized, total_len, "%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                (calls[0].status != NULL)      ? calls[0].status      : default_string,
+                (calls[0].mancalldesc != NULL) ? calls[0].mancalldesc : default_string,
+                (calls[0].mancallto != NULL)   ? calls[0].mancallto   : default_string,
+
+                (calls[1].status != NULL)      ? calls[1].status      : default_string,
+                (calls[1].mancalldesc != NULL) ? calls[1].mancalldesc : default_string,
+                (calls[1].mancallto != NULL)   ? calls[1].mancallto   : default_string,
+
+                (calls[2].status != NULL)      ? calls[2].status      : default_string,
+                (calls[2].mancalldesc != NULL) ? calls[2].mancalldesc : default_string,
+                (calls[2].mancallto != NULL)   ? calls[2].mancallto   : default_string);
+
+        // Save calls to NVS
+        save_string_to_nvs("nvs_calls", serialized);
+        free(serialized);
+    }
+}
+
+void retreiveCalls() {
+    const char* serialized = read_string_from_nvs("nvs_calls");
+    
+    if (serialized==NULL) {
+        ESP_LOGE(TAG_NVS, "Serialised string is NULL");
+        return;
+    }
+
+    char *copy = strdup(serialized);
+    if (copy == NULL) {
+        ESP_LOGE(TAG_NVS, "Memory allocation failed for string copy");
+        return;
+    }
+
+    // Split the serialized string by commas
+    char *status0 = strtok(copy, ",");
+    char *desc0   = strtok(NULL, ",");
+    char *to0     = strtok(NULL, ",");
+
+    char *status1 = strtok(NULL, ",");
+    char *desc1   = strtok(NULL, ",");
+    char *to1     = strtok(NULL, ",");
+
+    char *status2 = strtok(NULL, ",");
+    char *desc2   = strtok(NULL, ",");
+    char *to2     = strtok(NULL, ",");
+
+    free(serialized);
+
+    // Handle NULL values for missing fields
+    if (status0 != NULL && strcmp(status0, " ") == 0) status0 = NULL;
+    if (desc0 != NULL && strcmp(desc0, " ") == 0) desc0 = NULL;
+    if (to0 != NULL && strcmp(to0, " ") == 0) to0 = NULL;
+
+    if (status1 != NULL && strcmp(status1, " ") == 0) status1 = NULL;
+    if (desc1 != NULL && strcmp(desc1, " ") == 0) desc1 = NULL;
+    if (to1 != NULL && strcmp(to1, " ") == 0) to1 = NULL;
+
+    if (status2 != NULL && strcmp(status2, " ") == 0) status2 = NULL;
+    if (desc2 != NULL && strcmp(desc2, " ") == 0) desc2 = NULL;
+    if (to2 != NULL && strcmp(to2, " ") == 0) to2 = NULL;
+
+    // Set calls
+    setCallrecord(&calls[0], status0, desc0, to0);
+    setCallrecord(&calls[1], status1, desc1, to1);
+    setCallrecord(&calls[2], status2, desc2, to2);
+
+    ESP_LOGI(TAG_NVS, "Calls retreived from NVS");
+
+    free(copy);
+}
+
+void saveDepts() {
+    const char* default_string = " ";
+
+    size_t len_name = (department.deptname != NULL)      ? strlen(department.deptname)      : strlen(default_string);
+    size_t len_id   = (department.deptid != NULL) ? strlen(department.deptid) : strlen(default_string);
+
+    size_t total_len = len_name + len_id + 2; // 1 commas and 1 null terminator
+    
+    // Allocate memory for the serialized string
+    char *serialized = malloc(total_len);
+    if (serialized == NULL) {
+        ESP_LOGE(TAG_NVS, "Failed to allocate memory for serialized Deptrecord.");
+    } else {
+        // Serialize the struct into the allocated string
+        snprintf(serialized, total_len, "%s,%s",
+                (department.deptname != NULL) ? department.deptname : default_string,
+                (department.deptid != NULL) ? department.deptid : default_string);
+
+        // Save calls to NVS
+        save_string_to_nvs("nvs_dept", serialized);
+        free(serialized);
+    }
+}
+
+void retreiveDepts() {
+    const char* serialized = read_string_from_nvs("nvs_dept");
+    
+    if (serialized==NULL) {
+        ESP_LOGE(TAG_NVS, "Serialised string is NULL");
+        return;
+    }
+
+    char *copy = strdup(serialized);
+    if (copy == NULL) {
+        ESP_LOGE(TAG_NVS, "Memory allocation failed for string copy");
+        return;
+    }
+
+    // Split the serialized string by commas
+    char *deptname = strtok(copy, ",");
+    char *deptid   = strtok(NULL, ",");
+
+    free(serialized);
+
+    // Handle NULL values for missing fields
+    if (deptname != NULL && strcmp(deptname, " ") == 0) deptname = NULL;
+    if (deptid != NULL && strcmp(deptid, " ") == 0) deptid = NULL;
+    
+    // Set calls
+    setDeptrecord(&department, deptname, deptid);
+
+    ESP_LOGI(TAG_NVS, "Dept retreived from NVS");
+
+    free(copy);
+}
+
+void resetAll() {
+    setDeptrecord(&department, NULL, NULL);
+
+    setCallrecord(&calls[0], NULL, NULL, NULL);
+    setCallrecord(&calls[1], NULL, NULL, NULL);
+    setCallrecord(&calls[2], NULL, NULL, NULL);
+    
+    saveCalls();
+    saveDepts();
+}
 
 
 // --------------------------------------------------------
@@ -246,9 +517,38 @@ static const char *TAG_SOCK = "WebSocket";
 // Set either credentials if you're demonstrating with a mobile hotspot,
 // or comment all that and uncomment the functions where it's set in WPS
 
+#define websocket_uri   "ws://192.168.79.53:8080"
 #define WIFI_SSID       "Isuranga's Galaxy A72"
 #define WIFI_PASS       "xbai9431"
-#define websocket_uri   "ws://192.168.79.53:8080"
+
+// Connect Websocket server
+/*
+static char* resolve_mdns_host() {
+    ESP_LOGI(TAG_SOCK, "Query websocket server");
+
+    struct ip4_addr addr;
+    addr.addr=0;
+
+    esp_err_t err = mdns_query_a("AndonESP-Backend", 2000, &addr);
+    if (err) {
+        if (err == ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG_SOCK, "Server not found");
+        } else {
+            ESP_LOGW(TAG_SOCK, "mDNS Query failed");
+        }
+        return NULL;
+    }
+    ESP_LOGI(TAG_SOCK, "Query A: %s.local resolved to: " IPSTR, "AndonESP-Backend", IP2STR(&addr));
+    
+    char *websocket_uri = malloc(50);
+    if (websocket_uri == NULL) {
+        ESP_LOGE(TAG_CODE, "Failed to allocate memory to IP");
+        return NULL;
+    }
+
+    snprintf(websocket_uri, 50, "wss://" IPSTR ":443/", IP2STR(&addr));
+    return websocket_uri;
+}*/
 
 static EventGroupHandle_t wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
@@ -299,35 +599,6 @@ void wifi_init_sta(void)
     ESP_LOGI(TAG_WIFI, "wifi_init_sta finished.");
 }
 
-// Connect Websocket server
-/*
-static char* resolve_mdns_host() {
-    ESP_LOGI(TAG_SOCK, "Query websocket server");
-
-    struct ip4_addr addr;
-    addr.addr=0;
-
-    esp_err_t err = mdns_query_a("AndonESP-Backend", 2000, &addr);
-    if (err) {
-        if (err == ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG_SOCK, "Server not found");
-        } else {
-            ESP_LOGW(TAG_SOCK, "mDNS Query failed");
-        }
-        return NULL;
-    }
-    ESP_LOGI(TAG_SOCK, "Query A: %s.local resolved to: " IPSTR, "AndonESP-Backend", IP2STR(&addr));
-    
-    char *websocket_uri = malloc(50);
-    if (websocket_uri == NULL) {
-        ESP_LOGE(TAG_CODE, "Failed to allocate memory to IP");
-        return NULL;
-    }
-
-    snprintf(websocket_uri, 50, "wss://" IPSTR ":443/", IP2STR(&addr));
-    return websocket_uri;
-}*/
-
 // WebSocket event handler
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -361,8 +632,8 @@ void send_data_task(esp_websocket_client_handle_t client)
 
         // Create a JSON object
         cJSON *json = cJSON_CreateObject();
-        cJSON_AddNumberToObject(json, "consoleid", MACHINE_ID); // Define ConsoleID
-        cJSON_AddNumberToObject(json, "department", department.deptid ? department.deptid : -1);
+        cJSON_AddNumberToObject(json, "consoleid", CONSOLE_ID); // Define ConsoleID
+        cJSON_AddStringToObject(json, "department", department.deptid ? department.deptid : "Undefined");
         cJSON_AddStringToObject(json, "call1", call1 ? (calls[0].status ? calls[0].status : "Undefined") : "");
         cJSON_AddStringToObject(json, "call2", call2 ? (calls[1].status ? calls[1].status : "Undefined") : "");
         cJSON_AddStringToObject(json, "call3", call3 ? (calls[2].status ? calls[2].status : "Undefined") : "");
@@ -738,6 +1009,7 @@ void chooseCalls(int callIndex) {
         } else if (button==2) {
             if (callRecordCount!=0) {
                 setCallrecord(&calls[callIndex], callRecords[menu_item-1].status, callRecords[menu_item-1].mancalldesc, callRecords[menu_item-1].mancallto);
+                saveCalls();
             }
             ESP_LOGI(TAG_CODE, "Call chosen");
             disp_cls();
@@ -843,55 +1115,52 @@ void showSetDepartment(int menu_item) {
         disp_write("Go back", 5, 3, true);
 
     } else {
-        if (menu_item+3 <= deptRecordCount-1) {
-            if (menu_item%4 == 1) {
-                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
-                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
-            } else if (menu_item%4 == 2) {
-                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
-                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
-            } else if (menu_item%4 == 3) {
+        if ((deptRecordCount%4 == 3)&&(menu_item>deptRecordCount-3)) {
+            if ((menu_item-(deptRecordCount-3))%3 == 1) {
                 disp_write(deptRecords[menu_item].deptname, 5, 2, false);
                 disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item+3].deptname, 5, 4, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 1, true);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 1, true);
+            } else if ((menu_item-(deptRecordCount-3))%3 == 2) {
+                disp_write(deptRecords[menu_item-2].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 2, true);
             } else {
+                disp_write(deptRecords[menu_item-3].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item-2].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 3, true);
+            }
+        } else if ((deptRecordCount%4 == 2)&&(menu_item>deptRecordCount-2)) {
+            if ((menu_item - (deptRecordCount-2))%2 == 1) {
+                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 1, true);
+            } else {
+                disp_write(deptRecords[menu_item-2].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 2, true);
+            }
+        } else if ((deptRecordCount%4 == 1)&&(menu_item>deptRecordCount-1)) {
+            disp_write(deptRecords[menu_item-1].deptname, 5, 1, true);
+        } else {
+            if (menu_item%4 == 1) {
                 disp_write(deptRecords[menu_item].deptname, 5, 2, false);
                 disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
                 disp_write(deptRecords[menu_item+2].deptname, 5, 4, false);
-                disp_write(deptRecords[menu_item+3].deptname, 5, 1, true);
-            }
-            
-        } else if (menu_item+2 <= deptRecordCount-1) {
-            if (menu_item%4 == 1) {
-                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 1, true);
             } else if (menu_item%4 == 2) {
-                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
+                disp_write(deptRecords[menu_item-2].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item+1].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 2, true);
+            } else if (menu_item%4 == 3) {
+                disp_write(deptRecords[menu_item-3].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item-2].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item].deptname, 5, 4, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 3, true);
             } else {
-                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+1].deptname, 5, 3, false);
-                disp_write(deptRecords[menu_item+2].deptname, 5, 1, true);
+                disp_write(deptRecords[menu_item-4].deptname, 5, 1, false);
+                disp_write(deptRecords[menu_item-3].deptname, 5, 2, false);
+                disp_write(deptRecords[menu_item-2].deptname, 5, 3, false);
+                disp_write(deptRecords[menu_item-1].deptname, 5, 4, true);
             }
-    
-        } else if (menu_item+1 <= deptRecordCount-1) {
-            if (menu_item%4 == 1) {
-                disp_write(deptRecords[menu_item+1].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item].deptname, 5, 1, true);
-            } else if (menu_item%4 == 2) {
-                disp_write(deptRecords[menu_item].deptname, 5, 2, false);
-                disp_write(deptRecords[menu_item+1].deptname, 5, 1, true);
-            }
-            
-        } else {
-            disp_write(deptRecords[menu_item].deptname, 5, 1, true);
         }
     }
 }
@@ -922,6 +1191,7 @@ void setDepartment() {
         } else if (button==2) {
             if (deptRecordCount!=0) {
                 setDeptrecord(&department, deptRecords[menu_item-1].deptname, deptRecords[menu_item-1].deptid);
+                saveDepts();
             }
             vTaskDelay(pdMS_TO_TICKS(500));
             break;
@@ -934,32 +1204,43 @@ void showSettings(int menu_item) {
     if (menu_item==1) {
         disp_write("Choose Calls", 5, 2, false);
         disp_write("Set Department", 5, 3, false);
-        disp_write("Exit", 5, 4, false);
+        disp_write("Reset All", 5, 4, false);
+        disp_write("Exit", 5, 5, false);
 
         disp_write("Connect to WiFi", 5, 1, true);
 
     } else if (menu_item==2) {
         disp_write("Connect to WiFi", 5, 1, false);
         disp_write("Set Department", 5, 3, false);
-        disp_write("Exit", 5, 4, false);
+        disp_write("Reset All", 5, 4, false);
+        disp_write("Exit", 5, 5, false);
 
         disp_write("Choose Calls", 5, 2, true);
 
     } else if (menu_item==3) {
         disp_write("Connect to WiFi", 5, 1, false);
         disp_write("Choose Calls", 5, 2, false);
-        disp_write("Exit", 5, 4, false);
+        disp_write("Reset All", 5, 4, false);
+        disp_write("Exit", 5, 5, false);
 
         disp_write("Set Department", 5, 3, true);
+
+    } else if (menu_item==4) {
+        disp_write("Connect to WiFi", 5, 1, false);
+        disp_write("Choose Calls", 5, 2, false);
+        disp_write("Set Department", 5, 3, false);
+        disp_write("Exit", 5, 5, false);
+
+        disp_write("Reset All", 5, 4, true);
 
     } else {
         disp_write("Connect to WiFi", 5, 1, false);
         disp_write("Choose Calls", 5, 2, false);
         disp_write("Set Department", 5, 3, false);
+        disp_write("Reset All", 5, 4, false);
 
-        disp_write("Exit", 5, 4, true);
-
-    }            
+        disp_write("Exit", 5, 5, true);
+    }
 }
 
 // Settings menu
@@ -972,13 +1253,13 @@ void settings() {
         button = checkButtonPress();
 
         if (button==1) {
-            menu_item = (menu_item==1) ? 4 : menu_item-1;
+            menu_item = (menu_item==1) ? 5 : menu_item-1;
             vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
             showSettings(menu_item);           // Increment
 
         } else if (button==3) {           // Decrement
-            menu_item = (menu_item==4) ? 1 : menu_item+1;
+            menu_item = (menu_item==5) ? 1 : menu_item+1;
             vTaskDelay(pdMS_TO_TICKS(500));
             disp_cls();
             showSettings(menu_item);           // Increment
@@ -994,6 +1275,11 @@ void settings() {
             } else if (menu_item==3) {
                 disp_cls();
                 setDepartment();
+                showSettings(menu_item);
+            } else if (menu_item==4) {
+                disp_cls();
+                resetAll();
+                vTaskDelay(pdMS_TO_TICKS(500));
                 showSettings(menu_item);
             } else {
                 disp_cls();
@@ -1060,16 +1346,6 @@ void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(500));
     *gpio_out_w1tc_reg |= (1 << BKLT);
     vTaskDelay(pdMS_TO_TICKS(500));
-
-
-    // Initialize NVS (Non-Volatile Storage) to store Wi-Fi credentials
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG_CODE, "Non volatile memory initialized");
     
 /*  // Wifi initialization
     wifi_init_sta();
@@ -1077,9 +1353,31 @@ void app_main(void) {
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
     ESP_LOGI(TAG_WIFI, "Wifi initialized");*/
 
-    // Initializing Callrecords
+    // Initializing Callrecords 
     initialiseCallRecord();
-    testCallRecords();
+    initialiseDeptRecord();
+
+    // ---------- FOR TESTING ------------    
+    #if defined(BUILDMETHOD_DEMO)
+        testCallRecords();
+        testDeptRecords();
+    #endif
+    // -----------------------------------
+
+    // Initialisation of NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    // Retreiveing calls from NVS
+    nvs_initial_alloc("nvs_calls", " , , , , , , , , ");
+    retreiveCalls();
+    nvs_initial_alloc("nvs_dept", " , ");
+    retreiveDepts();
+
 /*
     // Initializing Websockets
     // char* WEBSOCKET_URI = resolve_mdns_host();
